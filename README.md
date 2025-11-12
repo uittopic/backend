@@ -183,6 +183,13 @@ Project đã được tối ưu cho macOS M1 Pro Max:
 - ✅ Không sử dụng fp16 (MPS chưa hỗ trợ tốt)
 - ✅ Tắt multiprocessing workers (tránh lỗi trên macOS)
 
+## 🧱 Cấu hình bằng file YAML
+
+- File huấn luyện: `configs/train_blip.yaml` (hyperparams, đường dẫn dữ liệu, model gốc)
+- File suy luận: `configs/infer.yaml` (model_id phiên bản đã phát hành, tham số generate)
+
+Bạn có thể chỉnh sửa hai file trên thay vì sửa trực tiếp trong code.
+
 ## 🔧 Troubleshooting
 
 ### Lỗi: Model chưa được train
@@ -212,6 +219,17 @@ per_device_train_batch_size=1  # Thay vì 2
 2. **Deploy API** → Chạy FastAPI server
 3. **Test** → Sử dụng Postman hoặc Swagger docs
 4. **Mobile App** → Gọi API từ ứng dụng mobile
+
+## 📦 Version hóa và lưu trữ mô hình
+
+- Không commit checkpoint nặng vào Git. Dùng 1 trong các cách:
+  - Hugging Face Hub (khuyến nghị): upload model và dùng `model_id` trong `configs/infer.yaml`
+  - Hoặc S3/MinIO/Google Drive và trỏ `MODEL_PATH` local khi deploy
+- Gợi ý quy trình trên Git:
+  1) Tạo nhánh: `git checkout -b feature/train-blip-vn`
+  2) Chạy train theo `configs/train_blip.yaml`, upload model lên Hub/S3
+  3) Cập nhật `configs/infer.yaml` -> `model.model_id` bằng version mới
+  4) Mở PR → review → merge → tạo tag `model-vX.Y`
 
 ## 🎯 Next Steps
 

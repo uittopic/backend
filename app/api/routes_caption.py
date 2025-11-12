@@ -4,7 +4,10 @@ Endpoint: POST /api/caption
 """
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from app.core.model_loader import model, processor
-from app.core.config import get_device, MAX_NEW_TOKENS, NUM_BEAMS, EARLY_STOPPING
+from app.core.config import (
+    get_device, MAX_NEW_TOKENS, NUM_BEAMS, EARLY_STOPPING,
+    TEMPERATURE, REPETITION_PENALTY, LENGTH_PENALTY
+)
 from PIL import Image
 import torch
 import io
@@ -31,13 +34,18 @@ async def generate_caption(file: UploadFile = File(...)):
         device = get_device()
         inputs = processor(images=image, return_tensors="pt").to(device)
         
-        # Generate caption
+        # Generate caption với parameters tối ưu cho tiếng Việt có dấu
+        # Sử dụng beam search với các penalties để cải thiện chất lượng output
         with torch.no_grad():
             output = model.generate(
                 **inputs, 
                 max_new_tokens=MAX_NEW_TOKENS,
                 num_beams=NUM_BEAMS,
-                early_stopping=EARLY_STOPPING
+                early_stopping=EARLY_STOPPING,
+                repetition_penalty=REPETITION_PENALTY,
+                length_penalty=LENGTH_PENALTY,
+                pad_token_id=processor.tokenizer.pad_token_id if processor.tokenizer.pad_token_id is not None else processor.tokenizer.eos_token_id,
+                eos_token_id=processor.tokenizer.eos_token_id
             )
         
         # Decode caption

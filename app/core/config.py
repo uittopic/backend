@@ -42,8 +42,11 @@ API_PORT = int(os.getenv("API_PORT", "8000"))
 
 # Generation Configuration
 MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "50"))
-NUM_BEAMS = int(os.getenv("NUM_BEAMS", "3"))
+NUM_BEAMS = int(os.getenv("NUM_BEAMS", "5"))  # Tăng beams để tìm output tốt hơn
 EARLY_STOPPING = os.getenv("EARLY_STOPPING", "true").lower() == "true"
+TEMPERATURE = float(os.getenv("TEMPERATURE", "0.7"))  # Thấp hơn để output ổn định hơn
+REPETITION_PENALTY = float(os.getenv("REPETITION_PENALTY", "1.2"))  # Tránh lặp lại
+LENGTH_PENALTY = float(os.getenv("LENGTH_PENALTY", "1.0"))  # Điều chỉnh độ dài
 
 # Logging Configuration
 LOG_DIR = BASE_DIR / os.getenv("LOG_DIR", "logs")
