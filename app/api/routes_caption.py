@@ -37,15 +37,15 @@ async def generate_caption(file: UploadFile = File(...)):
         # Generate caption với parameters tối ưu cho tiếng Việt có dấu
         # Sử dụng beam search với các penalties để cải thiện chất lượng output
         with torch.no_grad():
+            # Chỉ truyền pixel_values từ inputs để tránh conflict với các token_id
+            # Model sẽ tự động sử dụng eos_token_id và pad_token_id từ config
             output = model.generate(
-                **inputs, 
+                pixel_values=inputs["pixel_values"],
                 max_new_tokens=MAX_NEW_TOKENS,
                 num_beams=NUM_BEAMS,
                 early_stopping=EARLY_STOPPING,
                 repetition_penalty=REPETITION_PENALTY,
-                length_penalty=LENGTH_PENALTY,
-                pad_token_id=processor.tokenizer.pad_token_id if processor.tokenizer.pad_token_id is not None else processor.tokenizer.eos_token_id,
-                eos_token_id=processor.tokenizer.eos_token_id
+                length_penalty=LENGTH_PENALTY
             )
         
         # Decode caption
