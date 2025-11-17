@@ -1,24 +1,23 @@
 """
-Model Loader Module - Tối ưu cho macOS M1 Pro Max
-Sử dụng MPS (Metal Performance Shaders) backend nếu có GPU
+Model Loader Module - BLIP Vietnamese Captioning (không dấu)
+Tối ưu cho macOS M1 Pro Max - Sử dụng MPS (Metal Performance Shaders) backend nếu có GPU
+Model này tạo caption tiếng Việt KHÔNG DẤU, sau đó sẽ được xử lý bởi Accent Restoration Model
 """
 from transformers import BlipProcessor, BlipForConditionalGeneration
 import torch
-from app.core.config import (
-    MODEL_PATH,
-    PRETRAINED_MODEL,
-    get_device
-)
+from app.core.config import MODEL_PATH, PRETRAINED_MODEL, get_device, synchronize_device
 
-# Load processor và model
-print(f"🔄 Đang load model từ {MODEL_PATH}...")
-print(f"📱 Device: {get_device()}")
+# Load processor và model BLIP (caption không dấu)
+print(f"🔄 Đang load BLIP model từ {MODEL_PATH}...")
+device = get_device()
+print(f"📱 Device: {device}")
 
 # Kiểm tra xem model đã được train chưa
 if MODEL_PATH.exists() and any(MODEL_PATH.iterdir()):
+    # Load processor và model
     processor = BlipProcessor.from_pretrained(str(MODEL_PATH))
     model = BlipForConditionalGeneration.from_pretrained(str(MODEL_PATH))
-    print("✅ Đã load model fine-tuned tiếng Việt")
+    print("✅ Đã load BLIP model fine-tuned tiếng Việt (không dấu)")
 else:
     # Fallback về pretrained model nếu chưa train
     print("⚠️  Chưa có model fine-tuned, đang load pretrained model...")
@@ -26,9 +25,31 @@ else:
     model = BlipForConditionalGeneration.from_pretrained(PRETRAINED_MODEL)
     print("✅ Đã load pretrained model (chưa fine-tune tiếng Việt)")
 
-device = get_device()
+# Chuyển model sang device và tối ưu
 model.to(device)
 model.eval()
 
-print(f"✅ Model đã được load và chuyển sang {device}")
+# Tối ưu cho MPS: Set model to half precision nếu không phải MPS (MPS chưa hỗ trợ tốt fp16)
+# Giữ nguyên float32 cho MPS để đảm bảo stability
+if device != "mps":
+    # Có thể dùng half precision cho CUDA nếu cần
+    pass
+
+# Synchronize device sau khi load model (quan trọng cho MPS)
+synchronize_device()
+
+print(f"✅ BLIP model đã được load và chuyển sang {device}")
+print("📝 Model này tạo caption tiếng Việt KHÔNG DẤU")
+print("💡 Sử dụng /api/caption_full để có caption CÓ DẤU (qua Accent Restoration)")
+
+# Tối ưu: Compile model nếu PyTorch 2.0+ (tăng tốc inference)
+try:
+    if hasattr(torch, 'compile') and device != "mps":
+        # torch.compile() chưa hỗ trợ tốt MPS, chỉ dùng cho CUDA/CPU
+        print("⚡ Đang compile model để tăng tốc inference...")
+        model = torch.compile(model, mode="reduce-overhead")
+        print("✅ Model đã được compile")
+except Exception as e:
+    # Nếu không compile được, vẫn dùng model bình thường
+    pass
 

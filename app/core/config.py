@@ -4,7 +4,6 @@ Quản lý tất cả các cấu hình của ứng dụng
 """
 import os
 from pathlib import Path
-from typing import Optional
 
 # Load .env file nếu có
 try:
@@ -20,6 +19,10 @@ BASE_DIR = Path(__file__).parent.parent.parent
 MODEL_NAME = os.getenv("MODEL_NAME", "Salesforce/blip-image-captioning-base")
 MODEL_PATH = BASE_DIR / os.getenv("MODEL_PATH", "models/blip_vietnamese")
 PRETRAINED_MODEL = os.getenv("PRETRAINED_MODEL", "Salesforce/blip-image-captioning-base")
+
+# Accent Restoration Model Configuration
+ACCENT_MODEL_NAME = os.getenv("ACCENT_MODEL_NAME", "peterhung/vietnamese-accent-marker-xlm-roberta")
+ACCENT_MODEL_PATH = BASE_DIR / os.getenv("ACCENT_MODEL_PATH", "models/accent_restoration")
 
 # Data Configuration
 DATA_DIR = BASE_DIR / os.getenv("DATA_DIR", "data")
@@ -44,6 +47,8 @@ API_PORT = int(os.getenv("API_PORT", "8000"))
 MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "50"))
 NUM_BEAMS = int(os.getenv("NUM_BEAMS", "3"))
 EARLY_STOPPING = os.getenv("EARLY_STOPPING", "true").lower() == "true"
+NO_REPEAT_NGRAM_SIZE = int(os.getenv("NO_REPEAT_NGRAM_SIZE", "3"))
+REPETITION_PENALTY = float(os.getenv("REPETITION_PENALTY", "1.2"))
 
 # Logging Configuration
 LOG_DIR = BASE_DIR / os.getenv("LOG_DIR", "logs")
@@ -63,11 +68,63 @@ def get_device() -> str:
     else:
         return "cpu"
 
+def clear_device_cache():
+    """
+    Xóa cache của device (MPS/CUDA) để giải phóng memory
+    Tối ưu cho macOS M1 - MPS memory management
+    """
+    import torch
+    device = get_device()
+    if device == "mps":
+        # MPS không có empty_cache() như CUDA, nhưng có thể dùng synchronize()
+        try:
+            torch.mps.synchronize()
+        except AttributeError:
+            # Fallback nếu không có synchronize
+            pass
+    elif device == "cuda":
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+def synchronize_device():
+    """
+    Đồng bộ device để đảm bảo tất cả operations đã hoàn thành
+    Quan trọng cho MPS trên macOS
+    """
+    import torch
+    device = get_device()
+    if device == "mps":
+        try:
+            torch.mps.synchronize()
+        except AttributeError:
+            pass
+    elif device == "cuda":
+        torch.cuda.synchronize()
+
 # CORS Configuration
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
 
+# Batch Processing Configuration
+MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "10"))
+
+# Caching Configuration
+ENABLE_CACHE = os.getenv("ENABLE_CACHE", "true").lower() == "true"
+CACHE_TTL = int(os.getenv("CACHE_TTL", "86400"))  # 24 giờ (giây)
+REDIS_URL = os.getenv("REDIS_URL", None)  # None = dùng in-memory cache
+
+# Authentication Configuration
+ENABLE_AUTH = os.getenv("ENABLE_AUTH", "false").lower() == "true"
+API_KEYS = os.getenv("API_KEYS", "").split(",") if os.getenv("API_KEYS") else []
+API_KEYS = [key.strip() for key in API_KEYS if key.strip()]  # Remove empty strings
+
+# Rate Limiting Configuration
+ENABLE_RATE_LIMIT = os.getenv("ENABLE_RATE_LIMIT", "true").lower() == "true"
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
+RATE_LIMIT_PER_HOUR = int(os.getenv("RATE_LIMIT_PER_HOUR", "1000"))
+
 # Tạo thư mục nếu chưa có
 MODEL_PATH.mkdir(parents=True, exist_ok=True)
+ACCENT_MODEL_PATH.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 

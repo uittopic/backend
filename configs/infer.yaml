@@ -1,0 +1,17 @@
+# Cấu hình suy luận (mẫu)
+#
+model:
+  # Khuyến nghị: dùng model_id trên HuggingFace Hub hoặc đường dẫn local
+  model_id: "viet-user/blip-captioning-vi-v1"  # thay bằng model bạn upload
+  local_fallback_path: "models/blip_vietnamese"
+
+generation:
+  max_new_tokens: 50
+  num_beams: 3
+  early_stopping: true
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+
+

@@ -8,33 +8,48 @@ Hệ thống tạo caption tiếng Việt cho ảnh sản phẩm sử dụng BLI
 CHUYEN_DE_Backend/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py                 # FastAPI entrypoint
+│   ├── main.py                      # FastAPI entrypoint
 │   ├── api/
 │   │   ├── __init__.py
-│   │   └── routes_caption.py   # API upload ảnh, trả caption
+│   │   └── routes_caption.py        # API routes cho caption
 │   ├── core/
 │   │   ├── __init__.py
-│   │   ├── config.py           # Cấu hình ứng dụng
-│   │   └── model_loader.py     # Load BLIP model (tối ưu M1)
+│   │   ├── config.py                # Cấu hình ứng dụng
+│   │   ├── model_loader.py          # Load BLIP model
+│   │   └── accent_restoration_loader.py  # Load accent restoration model
+│   ├── middleware/
+│   │   ├── __init__.py
+│   │   └── auth.py                  # Authentication middleware
 │   └── utils/
-│       └── __init__.py
+│       ├── __init__.py
+│       ├── cache.py                 # Caching utilities
+│       └── rate_limit.py            # Rate limiting utilities
 │
 ├── train/
-│   └── train_blip_vietnamese.py # Fine-tune BLIP
+│   └── train_blip_vietnamese.py     # Fine-tune BLIP
+│
+├── tools/
+│   └── copy_images_by_csv.py        # Utility tool
 │
 ├── data/
 │   ├── train_bilingual_clean_v2.csv
-│   └── images/                 # Ảnh sản phẩm
+│   └── images/                      # Ảnh sản phẩm
 │
 ├── models/
-│   └── blip_vietnamese/        # Model sau fine-tune (đã tạo sẵn)
+│   └── blip_vietnamese/             # BLIP model sau fine-tune
 │
-├── logs/                       # Training logs
+├── configs/
+│   └── infer.yaml                   # Config mẫu
 │
-├── .env.example                # Template file cấu hình
+├── logs/                            # Logs directory
+├── outputs/                         # Training outputs
+│
 ├── .gitignore
 ├── requirements.txt
-└── README.md
+├── README.md
+├── HUONG_DAN_CHINH_THUC.md          # Hướng dẫn chính thức
+├── HUONG_DAN_TEST_POSTMAN.md        # Hướng dẫn test API
+└── Vietnamese_Caption_API.postman_collection.json
 ```
 
 ## 🚀 Cài đặt
@@ -58,37 +73,20 @@ pip install -r requirements.txt
 
 ### 3. Cấu hình (Tùy chọn)
 
-Nếu muốn tùy chỉnh cấu hình, copy file `.env.example` thành `.env` và chỉnh sửa:
+Các tham số có thể tùy chỉnh thông qua biến môi trường hoặc sửa trực tiếp trong `app/core/config.py`:
 
-```bash
-cp .env.example .env
-```
-
-Các tham số có thể tùy chỉnh:
 - `MODEL_PATH`: Đường dẫn lưu model (mặc định: `models/blip_vietnamese`)
+- Accent restoration model được tự động tải từ HuggingFace (`peterhung/vietnamese-accent-marker-xlm-roberta`)
 - `TRAIN_BATCH_SIZE`: Batch size cho training (mặc định: 2)
 - `MAX_NEW_TOKENS`: Số token tối đa khi generate caption (mặc định: 50)
 - `CORS_ORIGINS`: Các domain được phép gọi API (mặc định: `*`)
+- `ENABLE_AUTH`: Bật/tắt authentication (mặc định: `False`)
+- `ENABLE_CACHE`: Bật/tắt caching (mặc định: `True`)
+- `ENABLE_RATE_LIMIT`: Bật/tắt rate limiting (mặc định: `True`)
 
-Nếu không tạo file `.env`, hệ thống sẽ sử dụng giá trị mặc định từ `app/core/config.py`.
+Xem chi tiết trong `app/core/config.py`.
 
 ## 📊 Training Model
-
-### Bước 0: Kiểm tra Setup (Khuyến nghị)
-
-Chạy script kiểm tra trước khi training:
-
-```bash
-source venv/bin/activate
-python check_setup.py
-```
-
-Script sẽ kiểm tra:
-- ✅ Cấu trúc thư mục
-- ✅ Dataset CSV và thư mục images
-- ✅ Python packages
-- ✅ Device (MPS/CUDA/CPU)
-- ✅ Training script và API files
 
 ### Bước 1: Chuẩn bị dữ liệu
 
@@ -132,12 +130,19 @@ Server sẽ chạy tại: `http://127.0.0.1:8000`
 GET http://127.0.0.1:8000/
 ```
 
-#### 2. Health Check
+#### 2. Info
+```
+GET http://127.0.0.1:8000/info
+```
+Trả về thông tin về API và các endpoints có sẵn.
+
+#### 3. Health Check
 ```
 GET http://127.0.0.1:8000/api/health
 ```
+Kiểm tra trạng thái API và model.
 
-#### 3. Generate Caption
+#### 4. Generate Caption (Không dấu)
 ```
 POST http://127.0.0.1:8000/api/caption
 Content-Type: multipart/form-data
@@ -150,8 +155,73 @@ Body:
 ```json
 {
   "success": true,
+  "caption_vi": "ao khoac the thao nu mau den",
+  "device": "mps",
+  "cached": false,
+  "processing_time": 0.45
+}
+```
+
+#### 5. Generate Caption Batch (Không dấu)
+```
+POST http://127.0.0.1:8000/api/caption/batch
+Content-Type: multipart/form-data
+
+Body:
+  files: [<ảnh 1>, <ảnh 2>, ...]
+```
+
+#### 6. Generate Caption Full (Có dấu)
+```
+POST http://127.0.0.1:8000/api/caption_full
+Content-Type: multipart/form-data
+
+Body:
+  file: <ảnh sản phẩm>
+```
+
+**Response:**
+```json
+{
+  "success": true,
   "caption_vi": "áo khoác thể thao nữ màu đen",
-  "device": "mps"
+  "caption_vi_no_accent": "ao khoac the thao nu mau den",
+  "accent_restored": true,
+  "device": "mps",
+  "cached": false,
+  "processing_time": 0.78
+}
+```
+
+#### 7. Generate Caption Full Batch (Có dấu)
+```
+POST http://127.0.0.1:8000/api/caption_full/batch
+Content-Type: multipart/form-data
+
+Body:
+  files: [<ảnh 1>, <ảnh 2>, ...]
+```
+
+#### 8. Restore Accent (Test accent restoration)
+```
+POST http://127.0.0.1:8000/api/accent/restore
+Content-Type: application/json
+
+Body:
+{
+  "text": "ao khoac the thao mau den"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "text_no_accent": "ao khoac the thao mau den",
+  "text_with_accent": "áo khoác thể thao màu đen",
+  "device": "mps",
+  "accent_model_loaded": true,
+  "processing_time": 0.12
 }
 ```
 
@@ -174,11 +244,22 @@ curl -X POST "http://127.0.0.1:8000/api/caption" \
   -F "file=@/path/to/image.jpg"
 ```
 
-## ⚙️ Tối ưu cho macOS M1
+## ⚙️ Tối ưu cho macOS M1/M2/M3
 
-Project đã được tối ưu cho macOS M1 Pro Max:
+Project đã được tối ưu đầy đủ cho macOS với Apple Silicon (M1/M2/M3):
 
-- ✅ Tự động sử dụng MPS backend (Metal Performance Shaders)
+### Tối ưu Device & Memory:
+- ✅ Tự động detect và sử dụng MPS backend (Metal Performance Shaders)
+- ✅ Memory management: Tự động cleanup cache sau mỗi inference
+- ✅ Device synchronization: Đảm bảo operations hoàn thành trước khi tiếp tục
+- ✅ Batch processing: Cleanup memory mỗi 5 ảnh trong batch
+
+### Tối ưu Model:
+- ✅ Model compilation: Tự động compile model với `torch.compile()` (PyTorch 2.0+) cho CUDA/CPU
+- ✅ Float32 precision: Giữ nguyên float32 cho MPS (đảm bảo stability)
+- ✅ Image preprocessing: Tự động resize ảnh lớn (>512px) để giảm memory usage
+
+### Tối ưu Training:
 - ✅ Batch size phù hợp với M1 (2-4)
 - ✅ Không sử dụng fp16 (MPS chưa hỗ trợ tốt)
 - ✅ Tắt multiprocessing workers (tránh lỗi trên macOS)
@@ -213,13 +294,22 @@ per_device_train_batch_size=1  # Thay vì 2
 3. **Test** → Sử dụng Postman hoặc Swagger docs
 4. **Mobile App** → Gọi API từ ứng dụng mobile
 
+## ✨ Tính năng đã có
+
+- ✅ Batch processing (xử lý nhiều ảnh cùng lúc)
+- ✅ Caching để tăng tốc độ
+- ✅ Authentication/Authorization (có thể bật/tắt)
+- ✅ Rate limiting (có thể bật/tắt)
+- ✅ Accent restoration (tạo caption có dấu)
+- ✅ Health check endpoint
+- ✅ API documentation (Swagger)
+
 ## 🎯 Next Steps
 
-- [ ] Thêm endpoint `/api/batch` để xử lý nhiều ảnh cùng lúc
-- [ ] Thêm caching để tăng tốc độ
 - [ ] Deploy lên cloud (AWS, GCP, Azure)
-- [ ] Thêm authentication/authorization
-- [ ] Thêm rate limiting
+- [ ] Thêm monitoring và logging
+- [ ] Tối ưu model inference
+- [ ] Thêm metrics và analytics
 
 ## 📄 License
 

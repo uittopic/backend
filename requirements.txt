@@ -8,6 +8,7 @@ transformers==4.35.0
 torch==2.1.0
 torchvision==0.16.0
 datasets==2.14.6
+huggingface_hub==0.19.4
 
 # Data processing
 pandas==2.1.3
@@ -17,4 +18,8 @@ Pillow==10.1.0
 numpy==1.24.3
 python-dotenv==1.0.0
 tqdm==4.66.1
+
+# Caching và Rate Limiting
+slowapi==0.1.9
+redis==5.0.1  # Optional, có thể dùng in-memory cache
 

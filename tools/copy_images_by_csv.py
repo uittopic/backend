@@ -16,7 +16,6 @@ CSV_PATH = BASE_DIR / "data" / "train_bilingual_clean_v2.csv"
 TARGET_DIR = BASE_DIR / "data" / "images"
 
 # Thư mục nguồn - Có thể nhập từ command line hoặc sửa ở đây
-import sys
 if len(sys.argv) > 1:
     SOURCE_DIR = Path(sys.argv[1])
 else:

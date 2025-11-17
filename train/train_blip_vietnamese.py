@@ -88,16 +88,20 @@ def preprocess(batch):
     
     # Process với processor
     inputs = processor(
-        images=images, 
-        text=texts, 
-        padding="max_length", 
-        truncation=True, 
+        images=images,
+        text=texts,
+        padding="max_length",
+        truncation=True,
         max_length=77,
         return_tensors="pt"
     )
-    
-    # Labels cho training
-    inputs["labels"] = inputs["input_ids"].clone()
+
+    # Labels cho training (bỏ qua padding tokens khi tính loss)
+    input_ids = inputs["input_ids"]
+    attention_mask = inputs["attention_mask"]
+    labels = input_ids.clone()
+    labels[attention_mask == 0] = -100
+    inputs["labels"] = labels
     
     return inputs
 
@@ -145,6 +149,8 @@ training_args = TrainingArguments(
     fp16=False,  # MPS chưa hỗ trợ fp16 tốt
     dataloader_num_workers=0,  # Tránh lỗi multiprocessing trên macOS
     report_to="none",  # Không gửi lên wandb/tensorboard
+    remove_unused_columns=False,
+    overwrite_output_dir=True,
 )
 
 # === Trainer ===
