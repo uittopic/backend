@@ -309,8 +309,22 @@ async def generate_caption_full(
     check_rate_limit(request)
     
     try:
+        # Kiểm tra file có tồn tại không
+        if not file or not file.filename:
+            raise HTTPException(
+                status_code=400,
+                detail="Vui lòng gửi file ảnh. Field name phải là 'file' và type phải là 'File' (không phải 'Text')."
+            )
+        
         # Đọc file ảnh
         contents = await file.read()
+        
+        if len(contents) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="File ảnh rỗng. Vui lòng chọn file ảnh hợp lệ."
+            )
+        
         image = Image.open(io.BytesIO(contents)).convert("RGB")
         
         # Generate caption có dấu (có cache cho BLIP)

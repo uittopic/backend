@@ -44,6 +44,10 @@ models/
 logs/
 *.log
 
+# Outputs (test results, predictions)
+outputs/
+*.csv
+
 # Data (nếu không muốn commit)
 # data/images/
 # data/*.csv
