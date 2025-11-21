@@ -17,7 +17,7 @@ BASE_DIR = Path(__file__).parent.parent.parent
 
 # Model Configuration
 MODEL_NAME = os.getenv("MODEL_NAME", "Salesforce/blip-image-captioning-base")
-MODEL_PATH = BASE_DIR / os.getenv("MODEL_PATH", "models/blip_vietnamese")
+MODEL_PATH = BASE_DIR / os.getenv("MODEL_PATH", "models/blip_vietnamese_80_20")
 PRETRAINED_MODEL = os.getenv("PRETRAINED_MODEL", "Salesforce/blip-image-captioning-base")
 
 # Accent Restoration Model Configuration
@@ -54,18 +54,24 @@ REPETITION_PENALTY = float(os.getenv("REPETITION_PENALTY", "1.2"))
 LOG_DIR = BASE_DIR / os.getenv("LOG_DIR", "logs")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
-# Device Configuration (tự động detect)
+# Device Configuration (tự động detect, cho phép override)
+DEVICE_OVERRIDE = os.getenv("DEVICE", "cpu").lower()
+
 def get_device() -> str:
     """
-    Xác định device tối ưu
-    Ưu tiên: MPS (macOS M1) > CUDA > CPU
+    Xác định device mặc định cho inference.
+    Ưu tiên dùng giá trị override từ env (DEVICE).
+    Nếu không override, fallback: MPS > CUDA > CPU.
     """
     import torch
+
+    if DEVICE_OVERRIDE in {"cpu", "cuda", "mps"}:
+        return DEVICE_OVERRIDE
+
     if torch.backends.mps.is_available():
         return "mps"
-    elif torch.cuda.is_available():
+    if torch.cuda.is_available():
         return "cuda"
-    else:
         return "cpu"
 
 def clear_device_cache():

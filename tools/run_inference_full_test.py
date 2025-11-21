@@ -7,18 +7,22 @@ import torch
 
 from app.core.model_loader import model, processor
 from app.core.accent_restoration_loader import restore_accent
-from app.core.config import IMAGES_DIR, CSV_PATH
+from app.core.config import DATA_DIR, IMAGES_DIR, CSV_PATH
 
 
 # Đường dẫn dữ liệu để chạy inference
-# Mặc định dùng cùng CSV và thư mục ảnh như khi train:
-#   - CSV: data/train_bilingual_clean_v2.csv
-#   - Ảnh: data/images/
-TEST_IMG_DIR = IMAGES_DIR
-TEST_CSV = CSV_PATH
+# Ưu tiên dùng split test 20% nếu có, và cho phép override qua ENV
+DEFAULT_TEST_CSV = DATA_DIR / "test_20.csv"
+TEST_CSV = Path(
+    os.environ.get(
+        "INFER_CSV_PATH",
+        DEFAULT_TEST_CSV if DEFAULT_TEST_CSV.exists() else CSV_PATH,
+    )
+)
+TEST_IMG_DIR = Path(os.environ.get("INFER_IMAGES_DIR", IMAGES_DIR))
 
 # Đường dẫn file output
-OUTPUT_CSV = Path("outputs/predictions_test.csv")
+OUTPUT_CSV = Path(os.environ.get("INFER_OUTPUT_CSV", "outputs/predictions_test.csv"))
 
 
 def get_device() -> torch.device:
@@ -45,14 +49,31 @@ def generate_caption(image_path: Path):
     image = Image.open(image_path).convert("RGB")
 
     inputs = processor(images=image, return_tensors="pt").to(device)
+    
+    # Fix cho MPS: Chuyển model về CPU khi generate vì MPS không hỗ trợ tốt attention_mask auto-inference
+    # BLIP sẽ tự tạo input_ids cho text decoder, nhưng trên MPS cần attention_mask rõ ràng
+    # Cách đơn giản nhất: chuyển về CPU cho text decoder generation
+    generate_device = device
+    if device.type == "mps":
+        # Chuyển model về CPU tạm thời cho generation
+        model_cpu = model.cpu()
+        inputs_cpu = {k: v.cpu() if hasattr(v, "cpu") else v for k, v in inputs.items()}
+    else:
+        model_cpu = model
+        inputs_cpu = inputs
 
     with torch.no_grad():
-        output = model.generate(
-            **inputs,
+        output = model_cpu.generate(
+            **inputs_cpu,
             max_new_tokens=25,
             num_beams=3,
             early_stopping=True,
         )
+    
+    # Chuyển output về device ban đầu nếu cần
+    if device.type == "mps":
+        output = output.to(device)
+        model.to(device)  # Chuyển model về MPS lại
 
     caption_no_accent = processor.decode(output[0], skip_special_tokens=True)
     caption_with_accent = restore_accent(caption_no_accent)
@@ -61,6 +82,14 @@ def generate_caption(image_path: Path):
 
 
 def main():
+    print("=" * 60)
+    print("🚀 BẮT ĐẦU INFERENCE")
+    print("=" * 60)
+    print(f"📁 CSV input: {TEST_CSV}")
+    print(f"📁 Thư mục ảnh: {TEST_IMG_DIR}")
+    print(f"📁 CSV output: {OUTPUT_CSV}")
+    print()
+    
     if not TEST_CSV.exists():
         raise FileNotFoundError(
             f"Không tìm thấy file CSV tại {TEST_CSV}. "
@@ -73,19 +102,30 @@ def main():
             "Hãy đảm bảo đã copy ảnh vào đúng thư mục (ví dụ data/images/)."
         )
 
+    print("📖 Đang đọc file CSV...")
     rows = []
+    all_rows = []
 
     with open(TEST_CSV, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        for row in reader:
+        all_rows = list(reader)
+    
+    total = len(all_rows)
+    print(f"✅ Đã đọc {total} ảnh từ CSV")
+    print(f"🔄 Bắt đầu inference...")
+    print()
+    
+    for idx, row in enumerate(all_rows, 1):
             img_name = row["image"]
             img_path = TEST_IMG_DIR / img_name
 
             if not img_path.exists():
-                print(f"⚠️  Không tìm thấy ảnh: {img_path}, bỏ qua.")
+                print(f"[{idx}/{total}] ⚠️  Không tìm thấy ảnh: {img_path}, bỏ qua.")
                 continue
 
+            print(f"[{idx}/{total}] 🔄 Đang xử lý: {img_name}...", end=" ", flush=True)
             ca_no_ac, ca_full = generate_caption(img_path)
+            print(f"✅ {ca_full}")
 
             rows.append(
                 {
@@ -95,8 +135,8 @@ def main():
                 }
             )
 
-            print(f"✔ {img_name} → {ca_full}")
-
+    print()
+    print("💾 Đang ghi file output...")
     # Đảm bảo thư mục outputs tồn tại
     OUTPUT_CSV.parent.mkdir(exist_ok=True, parents=True)
 
@@ -107,8 +147,11 @@ def main():
         writer.writeheader()
         writer.writerows(rows)
 
-    print("\n🎉 DONE! File output nằm tại:")
+    print("=" * 60)
+    print("🎉 DONE! File output nằm tại:")
     print("➡", OUTPUT_CSV)
+    print(f"✅ Đã xử lý {len(rows)}/{total} ảnh")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

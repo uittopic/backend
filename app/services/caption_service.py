@@ -79,11 +79,31 @@ def _prepare_image(image: Image.Image) -> Image.Image:
 def _run_blip(image: Image.Image) -> str:
     """Chạy BLIP model để sinh caption không dấu."""
     device = get_device()
+    # Convert device string to torch.device object
+    device_obj = torch.device(device)
     prepared_image = _prepare_image(image)
-    inputs = processor(images=prepared_image, return_tensors="pt").to(device)
+    inputs = processor(images=prepared_image, return_tensors="pt").to(device_obj)
+    
+    # Fix cho MPS: Chuyển model về CPU khi generate vì MPS không hỗ trợ tốt attention_mask auto-inference
+    # BLIP sẽ tự tạo input_ids cho text decoder, nhưng trên MPS cần attention_mask rõ ràng
+    # Cách đơn giản nhất: chuyển về CPU cho text decoder generation
+    if device == "mps":
+        # Chuyển model về CPU tạm thời cho generation
+        model_cpu = model.cpu()
+        inputs_cpu = {k: v.cpu() if hasattr(v, "cpu") else v for k, v in inputs.items()}
+    else:
+        model_cpu = model
+        inputs_cpu = inputs
 
     with torch.no_grad():
-        output = model.generate(**inputs, **GENERATION_KWARGS)
+        output = model_cpu.generate(**inputs_cpu, **GENERATION_KWARGS)
+    
+    # Chuyển output về device ban đầu và model về MPS lại
+    if device == "mps":
+        output = output.to(device_obj)
+        model.to(device_obj)  # Chuyển model về MPS lại
+        synchronize_device()
+    else:
         synchronize_device()
 
     if hasattr(processor, "tokenizer") and processor.tokenizer is not None:

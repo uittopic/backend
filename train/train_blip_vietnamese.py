@@ -15,6 +15,11 @@ BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / "data"
 MODEL_DIR = BASE_DIR / "models"
 LOG_DIR = BASE_DIR / "logs"
+DEFAULT_TRAIN_CSV = DATA_DIR / "train_80.csv"
+DEFAULT_VAL_CSV = DATA_DIR / "test_20.csv"
+BASE_DATASET_CSV = DATA_DIR / "train_bilingual_clean_v2.csv"
+DEFAULT_MODEL_SUBDIR = "blip_vietnamese_80_20"
+DEFAULT_OUTPUT_DIR = MODEL_DIR / DEFAULT_MODEL_SUBDIR
 
 # Tạo thư mục nếu chưa có
 MODEL_DIR.mkdir(exist_ok=True)
@@ -29,28 +34,80 @@ def get_device():
     else:
         return "cpu"
 
+
+def get_train_ratio() -> float:
+    """Đọc tỉ lệ train từ env (mặc định 80%)."""
+    env_value = os.environ.get("TRAIN_SPLIT_RATIO", "0.8")
+    try:
+        ratio = float(env_value)
+    except ValueError:
+        print(f"⚠️  TRAIN_SPLIT_RATIO='{env_value}' không hợp lệ, dùng mặc định 0.8")
+        return 0.8
+
+    if not 0.0 < ratio < 1.0:
+        print(f"⚠️  TRAIN_SPLIT_RATIO={ratio} nằm ngoài (0,1), dùng mặc định 0.8")
+        return 0.8
+    return ratio
+
+
+def resolve_csv_path(env_key: str, default_path: Path) -> Path:
+    """Lấy đường dẫn CSV từ env nếu có, ngược lại dùng default."""
+    env_value = os.environ.get(env_key)
+    return Path(env_value) if env_value else default_path
+
+
+def load_or_create_splits(train_csv: Path, val_csv: Path, train_ratio: float):
+    """Load train/val CSV nếu có, nếu chưa có thì tạo từ dataset gốc."""
+    if train_csv.exists() and val_csv.exists():
+        print(f"✅ Đã tìm thấy split có sẵn:\n   • Train: {train_csv}\n   • Val/Test: {val_csv}")
+        train_df = pd.read_csv(train_csv)
+        val_df = pd.read_csv(val_csv)
+        return train_df, val_df
+
+    if not BASE_DATASET_CSV.exists():
+        raise FileNotFoundError(
+            f"Không tìm thấy dataset gốc tại {BASE_DATASET_CSV}. "
+            "Vui lòng kiểm tra lại đường dẫn hoặc đồng bộ dữ liệu."
+        )
+
+    print("\n🆕 Chưa có split 80/20. Đang tạo mới từ dataset gốc...")
+    df = pd.read_csv(BASE_DATASET_CSV)
+    df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+    split_idx = int(len(df) * train_ratio)
+    if split_idx == 0 or split_idx == len(df):
+        raise ValueError(f"train_ratio={train_ratio} tạo ra split rỗng. Hãy chọn giá trị trong (0,1).")
+
+    train_df = df[:split_idx].copy()
+    val_df = df[split_idx:].copy()
+
+    train_df.to_csv(train_csv, index=False)
+    val_df.to_csv(val_csv, index=False)
+
+    print(f"✅ Đã tạo train/test split:\n   • Train ({len(train_df)} samples): {train_csv}\n   • Test  ({len(val_df)} samples): {val_csv}")
+    return train_df, val_df
+
 print("=" * 60)
 print("🚀 Bắt đầu Fine-tune BLIP cho tiếng Việt")
 print("=" * 60)
 
 # === Load dataset ===
-print("\n📂 Đang load dataset...")
-csv_path = DATA_DIR / "train_bilingual_clean_v2.csv"
-df = pd.read_csv(csv_path)
+print("\n📂 Đang chuẩn bị dataset 80/20...")
+TRAIN_CSV_PATH = resolve_csv_path("TRAIN_CSV_PATH", DEFAULT_TRAIN_CSV)
+VAL_CSV_PATH = resolve_csv_path("VAL_CSV_PATH", DEFAULT_VAL_CSV)
+TRAIN_RATIO = get_train_ratio()
+MODEL_OUTPUT_DIR = Path(os.environ.get("MODEL_OUTPUT_DIR", DEFAULT_OUTPUT_DIR))
 
-print(f"✅ Đã load {len(df)} samples")
-print(f"📊 Các cột: {df.columns.tolist()}")
+print(f"⚙️  Train CSV path: {TRAIN_CSV_PATH}")
+print(f"⚙️  Val/Test CSV path: {VAL_CSV_PATH}")
+print(f"⚙️  Train ratio: {TRAIN_RATIO:.2f}")
+print(f"📦 Model output dir: {MODEL_OUTPUT_DIR}")
 
-# Shuffle data
-df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+train_df, val_df = load_or_create_splits(TRAIN_CSV_PATH, VAL_CSV_PATH, TRAIN_RATIO)
 
-# Split train/val (90/10)
-split = int(0.9 * len(df))
-train_df = df[:split].copy()
-val_df = df[split:].copy()
-
-print(f"📈 Train: {len(train_df)} samples")
-print(f"📈 Val: {len(val_df)} samples")
+print(f"📈 Train samples: {len(train_df)}")
+print(f"📈 Val/Test samples: {len(val_df)}")
+print(f"📊 Các cột: {train_df.columns.tolist()}")
 
 # === Load BLIP model ===
 print("\n🤖 Đang load BLIP model...")
@@ -132,7 +189,7 @@ print(f"✅ Val dataset: {len(val_dataset)} samples")
 # === Training Arguments ===
 # Tối ưu cho M1: batch size nhỏ hơn, không dùng fp16 (MPS chưa hỗ trợ tốt)
 training_args = TrainingArguments(
-    output_dir=str(MODEL_DIR / "blip_vietnamese"),
+    output_dir=str(MODEL_OUTPUT_DIR),
     per_device_train_batch_size=2,  # Nhỏ hơn cho M1
     per_device_eval_batch_size=2,
     num_train_epochs=5,
@@ -169,7 +226,7 @@ trainer.train()
 
 # === Save model ===
 print("\n💾 Đang lưu model...")
-final_model_path = MODEL_DIR / "blip_vietnamese"
+final_model_path = MODEL_OUTPUT_DIR
 model.save_pretrained(str(final_model_path))
 processor.save_pretrained(str(final_model_path))
 

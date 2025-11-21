@@ -15,7 +15,7 @@ from app.core.config import (
     synchronize_device, clear_device_cache
 )
 from app.utils.cache import (
-    get_image_hash, get_cached_caption, set_cached_caption
+    get_image_hash, get_cached_caption, set_cached_caption, clear_cache
 )
 from app.utils.rate_limit import check_rate_limit
 from PIL import Image
@@ -64,28 +64,52 @@ def _generate_caption_for_image(image: Image.Image, use_cache: bool = True) -> d
         if max(image.size) > max_size:
             image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
         
-        inputs = processor(images=image, return_tensors="pt").to(device)
+        # Convert device string to torch.device object
+        device_obj = torch.device(device)
+        inputs = processor(images=image, return_tensors="pt").to(device_obj)
+        
+        # Fix cho MPS: Chuyển model về CPU khi generate vì MPS không hỗ trợ tốt attention_mask auto-inference
+        # BLIP sẽ tự tạo input_ids cho text decoder, nhưng trên MPS cần attention_mask rõ ràng
+        # Cách đơn giản nhất: chuyển về CPU cho text decoder generation
+        # LƯU Ý: Không chuyển model gốc, mà tạo reference để tránh ảnh hưởng đến model state
+        if device == "mps":
+            # Chuyển model về CPU tạm thời cho generation
+            # Sử dụng with torch.no_grad() để đảm bảo không ảnh hưởng đến model state
+            model_cpu = model.cpu()
+            inputs_cpu = {k: v.cpu() if hasattr(v, "cpu") else v for k, v in inputs.items()}
+        else:
+            model_cpu = model
+            inputs_cpu = inputs
+        
         with torch.no_grad():
-            output = model.generate(
-                **inputs,
+            output = model_cpu.generate(
+                **inputs_cpu,
                 **generation_kwargs
             )
-            # Synchronize device sau khi generate (quan trọng cho MPS)
-            synchronize_device()
+        
+        # QUAN TRỌNG: Decode phải thực hiện trên CPU, không phải MPS
+        # Tokenizer decode có thể không hoạt động đúng với tensor trên MPS
+        # Output từ generate() đã ở trên CPU rồi (vì model_cpu.generate())
+        output_cpu = output.cpu() if output.device.type != "cpu" else output
         
         # Decode bằng tokenizer trực tiếp
         # processor.decode() có thể không hoạt động đúng với tokenizer tùy chỉnh
         if hasattr(processor, 'tokenizer') and processor.tokenizer is not None:
-            caption = processor.tokenizer.decode(output[0], skip_special_tokens=True)
+            caption = processor.tokenizer.decode(output_cpu[0], skip_special_tokens=True)
         else:
-            caption = processor.decode(output[0], skip_special_tokens=True)
+            caption = processor.decode(output_cpu[0], skip_special_tokens=True)
+        
+        # Chuyển model về device ban đầu (MPS) nếu cần (SAU KHI decode)
+        # Chỉ chuyển nếu model đã được chuyển về CPU
+        if device == "mps" and model_cpu is not model:
+            model.to(device_obj)  # Chuyển model về MPS lại
+            # Synchronize device sau khi generate (quan trọng cho MPS)
+            synchronize_device()
         
         # Cleanup: Move tensors to CPU trước khi delete để giải phóng memory tốt hơn
-        if hasattr(output, 'cpu'):
-            output = output.cpu()
         if hasattr(inputs, 'to'):
             inputs = {k: v.cpu() if hasattr(v, 'cpu') else v for k, v in inputs.items()}
-        del inputs, output
+        del inputs, output, output_cpu
         return caption
 
     # Kiểm tra cache nếu bật
@@ -499,5 +523,14 @@ async def health_check():
         "accent_model_loaded": accent_model is not None,
         "cache_enabled": ENABLE_CACHE,
         "cache_stats": cache_stats
+    }
+
+@router.post("/cache/clear")
+async def clear_cache_endpoint():
+    """Xóa toàn bộ cache"""
+    clear_cache()
+    return {
+        "success": True,
+        "message": "Cache đã được xóa"
     }
 

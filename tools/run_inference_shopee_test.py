@@ -104,9 +104,27 @@ def generate_caption(image_path: Path):
     """
     image = Image.open(image_path).convert("RGB")
     inputs = processor(images=image, return_tensors="pt").to(device)
+    
+    # Fix cho MPS: Chuyển model về CPU khi generate vì MPS không hỗ trợ tốt attention_mask auto-inference
+    # BLIP sẽ tự tạo input_ids cho text decoder, nhưng trên MPS cần attention_mask rõ ràng
+    # Cách đơn giản nhất: chuyển về CPU cho text decoder generation
+    if device.type == "mps":
+        # Chuyển model về CPU tạm thời cho generation
+        model_cpu = model.cpu()
+        inputs_cpu = {k: v.cpu() if hasattr(v, "cpu") else v for k, v in inputs.items()}
+    else:
+        model_cpu = model
+        inputs_cpu = inputs
 
     with torch.no_grad():
-        output = model.generate(**inputs, **GENERATION_KWARGS)
+        output = model_cpu.generate(**inputs_cpu, **GENERATION_KWARGS)
+    
+    # Chuyển output về device ban đầu và model về MPS lại
+    if device.type == "mps":
+        output = output.to(device)
+        model.to(device)  # Chuyển model về MPS lại
+        synchronize_device()
+    else:
         synchronize_device()
 
     # Decode caption không dấu
