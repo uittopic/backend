@@ -39,49 +39,161 @@
 
 ### 1.1. Đặt vấn đề
 
-**Nội dung gợi ý**:
-- Vấn đề tra cứu sản phẩm trên các sàn thương mại điện tử
-- Tầm quan trọng của caption tiếng Việt cho ảnh sản phẩm
-- Khó khăn trong việc tạo caption tự động, chính xác, có dấu
+Trong thời đại công nghệ số hiện nay, thương mại điện tử đang phát triển mạnh mẽ với hàng triệu sản phẩm được đăng bán mỗi ngày trên các nền tảng như Shopee, Lazada, Tiki. Một trong những thách thức lớn nhất mà các sàn thương mại điện tử phải đối mặt là việc quản lý và tra cứu sản phẩm một cách hiệu quả. Hầu hết các sản phẩm được mô tả bằng ảnh, nhưng việc tìm kiếm và phân loại sản phẩm dựa trên ảnh vẫn còn nhiều hạn chế.
 
-**Số liệu tham khảo**:
-- Dataset: 7,638 ảnh sản phẩm từ Shopee
-- Nhu cầu: Caption tiếng Việt có dấu, tự nhiên, ngắn gọn
+Vấn đề chính nằm ở việc thiếu mô tả văn bản tiếng Việt chính xác và tự nhiên cho các ảnh sản phẩm. Hiện tại, nhiều sản phẩm trên các sàn thương mại điện tử có caption gốc bằng tiếng Anh hoặc mô tả dạng SEO dài dòng, không phù hợp với nhu cầu của người dùng Việt Nam. Việc tạo caption tiếng Việt thủ công cho hàng nghìn sản phẩm là không khả thi về mặt thời gian và chi phí.
+
+Hơn nữa, tiếng Việt là ngôn ngữ có dấu (accented language), điều này tạo ra thách thức bổ sung cho các mô hình AI. Nhiều mô hình image captioning hiện tại được thiết kế cho tiếng Anh và không hỗ trợ tốt tiếng Việt, đặc biệt là việc sinh caption có dấu chính xác. Việc tạo caption không dấu rồi sau đó phục hồi dấu là một giải pháp khả thi, nhưng đòi hỏi một pipeline xử lý phức tạp và chính xác.
+
+Từ những vấn đề trên, chúng tôi nhận thấy nhu cầu cấp thiết phải xây dựng một hệ thống tự động tạo caption tiếng Việt có dấu, tự nhiên và ngắn gọn cho ảnh sản phẩm. Hệ thống này sẽ giúp:
+- Tự động hóa quá trình tạo mô tả sản phẩm, tiết kiệm thời gian và chi phí
+- Cải thiện trải nghiệm người dùng với caption tiếng Việt tự nhiên, dễ hiểu
+- Hỗ trợ tra cứu và tìm kiếm sản phẩm hiệu quả hơn
+- Mở rộng khả năng ứng dụng AI trong lĩnh vực thương mại điện tử tại Việt Nam
+
+Với dataset gồm 7,638 ảnh sản phẩm từ Shopee được cung cấp, chúng tôi có cơ hội nghiên cứu và phát triển một giải pháp cụ thể cho bài toán này. Đây là một bài toán thực tế, có ý nghĩa và có thể ứng dụng ngay vào thực tế.
 
 ### 1.2. Mục tiêu nghiên cứu
 
-**Mục tiêu chính**:
-1. Fine-tune mô hình BLIP để sinh caption tiếng Việt không dấu
-2. Sử dụng Accent Restoration để chuyển caption không dấu → có dấu
-3. Xây dựng API prototype để demo
-4. Đánh giá mô hình theo yêu cầu: train 80% – test 20%
+#### 1.2.1. Mục tiêu chính
 
-**Mục tiêu phụ**:
-- Tối ưu cho macOS M1/M2/M3
-- Xây dựng hệ thống caching và rate limiting
-- Đánh giá bằng nhiều metrics (BLEU, ROUGE-L, SBERT)
+Dựa trên những vấn đề đã nêu, dự án này đặt ra các mục tiêu chính sau:
+
+**Mục tiêu 1: Fine-tune mô hình BLIP cho tiếng Việt**
+- Nghiên cứu và áp dụng mô hình BLIP (Bootstrapping Language-Image Pre-training) của Salesforce Research
+- Fine-tune mô hình trên dataset tiếng Việt gồm 7,638 ảnh sản phẩm từ Shopee
+- Đạt được khả năng sinh caption tiếng Việt không dấu, ngắn gọn và chính xác cho ảnh sản phẩm
+- Chia dataset theo tỉ lệ 80% cho training và 20% cho testing theo yêu cầu
+
+**Mục tiêu 2: Xây dựng pipeline phục hồi dấu tiếng Việt**
+- Tích hợp mô hình Accent Restoration để chuyển đổi caption không dấu sang có dấu
+- Sử dụng mô hình `peterhung/vietnamese-accent-marker-xlm-roberta` với độ chính xác cao
+- Đảm bảo caption cuối cùng có dấu chính xác, tự nhiên và dễ đọc
+
+**Mục tiêu 3: Xây dựng API prototype**
+- Phát triển REST API sử dụng FastAPI framework
+- Cung cấp các endpoint để sinh caption cho ảnh đơn lẻ và batch
+- Tích hợp các tính năng: caching, rate limiting, error handling
+- Tạo tài liệu API tự động với Swagger UI
+
+**Mục tiêu 4: Đánh giá và phân tích kết quả**
+- Đánh giá mô hình trên test set 20% (1,528 samples)
+- Sử dụng nhiều metrics: BLEU, ROUGE-L, và SBERT Similarity
+- Phân tích và so sánh kết quả với baseline
+- Đưa ra nhận xét và đánh giá về hiệu quả của giải pháp
+
+#### 1.2.2. Mục tiêu phụ
+
+Ngoài các mục tiêu chính, dự án còn đặt ra các mục tiêu phụ nhằm nâng cao chất lượng và khả năng ứng dụng:
+
+- **Tối ưu hóa cho macOS**: Tối ưu code và model để chạy hiệu quả trên macOS với Apple Silicon (M1/M2/M3), sử dụng MPS (Metal Performance Shaders) backend
+- **Xây dựng hệ thống caching**: Implement caching mechanism để tăng tốc độ xử lý và giảm tải cho model
+- **Rate limiting**: Bảo vệ API khỏi quá tải với rate limiting
+- **Đánh giá đa metrics**: Sử dụng nhiều metrics khác nhau để đánh giá toàn diện chất lượng caption
+- **Code quality**: Viết code rõ ràng, có cấu trúc, dễ maintain và mở rộng
 
 ### 1.3. Phạm vi nghiên cứu
 
-**Phạm vi**:
-- Dataset: 7,638 ảnh sản phẩm Shopee
-- Model: BLIP (Salesforce) + Accent Restoration (peterhung)
-- Platform: macOS với MPS backend
-- Evaluation: Test set 20% (1,528 samples)
+#### 1.3.1. Phạm vi nghiên cứu
 
-**Giới hạn**:
-- Chỉ xử lý ảnh sản phẩm (không phải ảnh tổng quát)
-- Caption ngắn gọn (max 50 tokens)
-- Tiếng Việt có dấu
+Dự án này tập trung vào các phạm vi sau:
+
+**Về dữ liệu:**
+- Dataset: 7,638 ảnh sản phẩm từ Shopee được cung cấp
+- Format: CSV file chứa đường dẫn ảnh và caption tiếng Việt
+- Loại ảnh: Ảnh sản phẩm thương mại điện tử (quần áo, giày dép, phụ kiện, v.v.)
+- Chia dataset: 80% cho training (6,110 samples) và 20% cho testing (1,528 samples)
+
+**Về mô hình:**
+- Base model: BLIP (Salesforce/blip-image-captioning-base) - mô hình pre-trained trên 129M ảnh-caption pairs
+- Accent Restoration: `peterhung/vietnamese-accent-marker-xlm-roberta` - mô hình Token Classification cho phục hồi dấu tiếng Việt
+- Fine-tuning: Fine-tune BLIP trên dataset tiếng Việt với 5 epochs
+
+**Về nền tảng:**
+- Hệ điều hành: macOS với Apple Silicon (M1/M2/M3)
+- Backend: MPS (Metal Performance Shaders) cho GPU acceleration
+- Framework: FastAPI cho REST API, PyTorch cho deep learning
+- Ngôn ngữ lập trình: Python 3.8+
+
+**Về đánh giá:**
+- Test set: 1,528 samples (20% của dataset)
+- Metrics: BLEU Score, ROUGE-L F1, SBERT Similarity
+- So sánh với: Pretrained BLIP (baseline) và caption gốc từ Shopee
+
+#### 1.3.2. Giới hạn nghiên cứu
+
+Dự án có các giới hạn sau:
+
+**Về loại ảnh:**
+- Chỉ xử lý ảnh sản phẩm thương mại điện tử, không phải ảnh tổng quát
+- Không xử lý ảnh có nhiều đối tượng phức tạp hoặc ảnh nghệ thuật
+- Ảnh đầu vào phải có chất lượng tối thiểu và rõ ràng
+
+**Về độ dài caption:**
+- Caption sinh ra có độ dài tối đa 50 tokens
+- Caption ngắn gọn, tập trung vào mô tả sản phẩm chính
+- Không bao gồm thông tin chi tiết như giá cả, thông số kỹ thuật
+
+**Về ngôn ngữ:**
+- Chỉ hỗ trợ tiếng Việt có dấu
+- Không hỗ trợ đa ngôn ngữ hoặc tiếng Việt không dấu (sau khi restore accent)
+- Không xử lý các từ viết tắt hoặc thuật ngữ chuyên ngành đặc biệt
+
+**Về hiệu năng:**
+- Inference time: ~0.8-1.2 giây mỗi ảnh (có thể tối ưu thêm)
+- Batch processing: Tối đa 10 ảnh mỗi request
+- Memory usage: Phụ thuộc vào kích thước ảnh và batch size
+
+**Về đánh giá:**
+- Metrics chủ yếu dựa trên semantic similarity (SBERT) vì caption gốc từ Shopee có format SEO dài, khác với caption sinh ra
+- Không so sánh trực tiếp với các mô hình image captioning khác do thiếu dataset benchmark tiếng Việt
 
 ### 1.4. Cấu trúc báo cáo
 
-**Mô tả ngắn gọn các chương**:
-- Chương 2: Cơ sở lý thuyết về BLIP, Image Captioning, Accent Restoration
-- Chương 3: Phân tích và thiết kế hệ thống
-- Chương 4: Cài đặt và triển khai
-- Chương 5: Đánh giá và kết quả
-- Chương 6: Kết luận và hướng phát triển
+Báo cáo được chia thành 6 chương chính và các phần phụ lục, cụ thể như sau:
+
+**Chương 1: Giới thiệu**
+- Đặt vấn đề, mục tiêu nghiên cứu, phạm vi và giới hạn nghiên cứu
+- Cấu trúc báo cáo
+
+**Chương 2: Cơ sở lý thuyết**
+- Tổng quan về Image Captioning và các phương pháp hiện tại
+- Giới thiệu chi tiết về mô hình BLIP: kiến trúc, cơ chế hoạt động, và khả năng ứng dụng
+- Lý thuyết về Accent Restoration cho tiếng Việt
+- Các metrics đánh giá: BLEU, ROUGE-L, và SBERT Similarity
+
+**Chương 3: Phân tích và thiết kế hệ thống**
+- Kiến trúc tổng thể của hệ thống
+- Pipeline xử lý từ training đến inference
+- Thiết kế API và các endpoint
+- Cơ chế caching và rate limiting
+- Xử lý lỗi và edge cases
+
+**Chương 4: Cài đặt và triển khai**
+- Quy trình chuẩn bị và tiền xử lý dataset
+- Quá trình fine-tuning BLIP model với các tham số cụ thể
+- Triển khai API với FastAPI
+- Các kỹ thuật tối ưu hóa cho macOS và MPS backend
+- Giải quyết các vấn đề kỹ thuật trong quá trình phát triển
+
+**Chương 5: Đánh giá và kết quả**
+- Setup đánh giá và các metrics sử dụng
+- Kết quả thực nghiệm trên test set 20%
+- Phân tích chi tiết từng metric và so sánh với baseline
+- Ví dụ minh họa caption sinh ra
+- Đánh giá hiệu năng và tốc độ xử lý
+
+**Chương 6: Kết luận và hướng phát triển**
+- Tổng kết những gì đã đạt được
+- Nhận xét về hạn chế và thách thức
+- Đề xuất hướng phát triển trong tương lai
+- Đóng góp của dự án và khả năng ứng dụng thực tế
+
+**Phần phụ lục:**
+- Code snippets quan trọng
+- Tài liệu API đầy đủ
+- Kết quả đánh giá chi tiết
+- Thống kê dataset
 
 ---
 
@@ -89,137 +201,501 @@
 
 ### 2.1. Image Captioning
 
-**Định nghĩa**:
-- Nhiệm vụ tạo mô tả văn bản cho ảnh
-- Kết hợp Computer Vision và Natural Language Processing
+#### 2.1.1. Định nghĩa và Tổng quan
 
-**Các phương pháp**:
-- Encoder-Decoder architecture
-- Attention mechanism
-- Transformer-based models
+Image Captioning là một nhiệm vụ đa phương thức (multimodal) trong lĩnh vực trí tuệ nhân tạo, kết hợp giữa Computer Vision và Natural Language Processing. Nhiệm vụ này yêu cầu hệ thống tự động tạo ra một câu mô tả văn bản chính xác và tự nhiên cho một hình ảnh đầu vào. Khác với Image Classification (phân loại ảnh) hay Object Detection (phát hiện đối tượng), Image Captioning không chỉ nhận diện các đối tượng trong ảnh mà còn phải hiểu được mối quan hệ giữa chúng và diễn đạt bằng ngôn ngữ tự nhiên.
 
-**Ứng dụng**:
-- Accessibility (mô tả ảnh cho người khiếm thị)
-- E-commerce (mô tả sản phẩm)
-- Content generation
+Bài toán Image Captioning có thể được mô tả như sau: Cho một hình ảnh I, tìm một chuỗi từ W = {w₁, w₂, ..., wₙ} sao cho W mô tả chính xác nội dung của I. Đây là một bài toán khó vì nó đòi hỏi hệ thống phải:
+- Hiểu được nội dung hình ảnh (Computer Vision)
+- Tạo ra câu văn có ngữ pháp và ngữ nghĩa đúng (Natural Language Processing)
+- Kết hợp hai domain này một cách hiệu quả
+
+#### 2.1.2. Lịch sử phát triển
+
+Image Captioning đã trải qua nhiều giai đoạn phát triển:
+
+**Giai đoạn 1: Template-based (2010-2014)**
+- Sử dụng template cố định với các slot được điền bởi kết quả từ object detection
+- Ví dụ: "A [object] is [action] in [location]"
+- Hạn chế: Cứng nhắc, không tự nhiên
+
+**Giai đoạn 2: Encoder-Decoder với RNN (2014-2017)**
+- Encoder: CNN (VGG, ResNet) để trích xuất features từ ảnh
+- Decoder: RNN/LSTM để sinh caption từ features
+- Đột phá: Show and Tell (2014), Show, Attend and Tell (2015)
+- Hạn chế: Vanishing gradient, khó xử lý long-range dependencies
+
+**Giai đoạn 3: Attention Mechanism (2015-2019)**
+- Thêm attention mechanism để decoder "nhìn" vào các vùng khác nhau của ảnh khi sinh từng từ
+- Cải thiện đáng kể chất lượng caption
+- Ví dụ: Show, Attend and Tell, Bottom-Up and Top-Down Attention
+
+**Giai đoạn 4: Transformer-based (2019-nay)**
+- Áp dụng Transformer architecture cho cả vision và language
+- Vision Transformer (ViT) thay thế CNN
+- Cross-modal attention để kết hợp thông tin ảnh và text
+- Ví dụ: BLIP, CLIP, Flamingo, GPT-4V
+
+#### 2.1.3. Kiến trúc cơ bản
+
+Hầu hết các mô hình Image Captioning hiện đại đều tuân theo kiến trúc Encoder-Decoder:
+
+**Encoder (Vision Encoder)**:
+- Nhiệm vụ: Trích xuất đặc trưng từ hình ảnh
+- Input: Hình ảnh I (thường là 224×224 hoặc 384×384 pixels)
+- Output: Feature representation F = {f₁, f₂, ..., fₖ}
+- Các phương pháp:
+  - CNN-based: VGG, ResNet, EfficientNet
+  - Transformer-based: ViT (Vision Transformer), Swin Transformer
+
+**Decoder (Text Decoder)**:
+- Nhiệm vụ: Sinh caption từ feature representation
+- Input: Feature F từ encoder
+- Output: Chuỗi từ W = {w₁, w₂, ..., wₙ}
+- Các phương pháp:
+  - RNN/LSTM/GRU
+  - Transformer Decoder
+  - GPT-style autoregressive generation
+
+**Attention Mechanism**:
+- Cho phép decoder "tập trung" vào các vùng khác nhau của ảnh khi sinh từng từ
+- Công thức cơ bản:
+  ```
+  Attention(Q, K, V) = softmax(QK^T / √d_k) × V
+  ```
+- Trong đó:
+  - Q (Query): Từ decoder hiện tại
+  - K, V (Key, Value): Features từ encoder
+  - d_k: Dimension của key
+
+#### 2.1.4. Ứng dụng thực tế
+
+Image Captioning có nhiều ứng dụng quan trọng:
+
+**Accessibility (Khả năng tiếp cận)**:
+- Mô tả ảnh cho người khiếm thị qua screen reader
+- Giúp người khiếm thị hiểu được nội dung ảnh trên web, social media
+
+**E-commerce (Thương mại điện tử)**:
+- Tự động tạo mô tả sản phẩm từ ảnh
+- Cải thiện SEO và trải nghiệm người dùng
+- Hỗ trợ tìm kiếm sản phẩm bằng hình ảnh
+
+**Content Generation (Tạo nội dung)**:
+- Tự động tạo caption cho ảnh trên social media
+- Hỗ trợ nhà báo, blogger tạo mô tả ảnh nhanh chóng
+
+**Image Search (Tìm kiếm ảnh)**:
+- Chuyển đổi ảnh thành text để tìm kiếm dễ dàng hơn
+- Hỗ trợ tìm kiếm semantic (theo nghĩa) thay vì chỉ theo từ khóa
 
 ### 2.2. BLIP Model
 
-**Giới thiệu**:
-- **BLIP**: Bootstrapping Language-Image Pre-training
-- Phát triển bởi Salesforce Research
-- Pre-trained trên 129M ảnh-caption pairs
+#### 2.2.1. Giới thiệu
 
-**Architecture**:
+BLIP (Bootstrapping Language-Image Pre-training) là một mô hình vision-language được phát triển bởi Salesforce Research và công bố vào năm 2022. BLIP được thiết kế để giải quyết vấn đề "noise" trong dữ liệu web-scale (như các caption tự động từ web thường không chính xác) bằng cách sử dụng một phương pháp bootstrapping để tạo ra dữ liệu training chất lượng cao.
+
+**Đặc điểm nổi bật của BLIP**:
+- Pre-trained trên 129 triệu ảnh-caption pairs từ web
+- Hỗ trợ cả understanding (hiểu) và generation (sinh) tasks
+- Có khả năng filter và tạo ra caption chất lượng cao từ dữ liệu noisy
+- Đạt state-of-the-art trên nhiều benchmarks
+
+**Các phiên bản BLIP**:
+- **BLIP**: Base model với 224M parameters
+- **BLIP-Large**: Large model với 990M parameters
+- **BLIP-2**: Phiên bản cải tiến với Q-Former và frozen image encoder
+
+#### 2.2.2. Kiến trúc
+
+BLIP sử dụng kiến trúc multimodal encoder-decoder với 3 thành phần chính:
+
+**1. Vision Encoder (ViT - Vision Transformer)**:
+- Base: ViT-B/16 (Vision Transformer với patch size 16×16)
+- Input: Ảnh được chia thành patches 16×16
+- Process:
+  - Linear projection của mỗi patch thành embedding
+  - Thêm positional encoding
+  - Qua các Transformer layers để tạo image features
+- Output: Sequence of image features F_img = {f₁, f₂, ..., fₙ}
+
+**2. Text Encoder (BERT-based)**:
+- Base: BERT architecture
+- Nhiệm vụ: Encode text input (cho understanding tasks)
+- Sử dụng: Image-Text Retrieval, Image-Text Matching
+
+**3. Text Decoder (BERT-based với Causal Masking)**:
+- Base: BERT architecture nhưng với causal masking (chỉ nhìn được các từ trước đó)
+- Nhiệm vụ: Generate caption từ image features
+- Sử dụng: Image Captioning
+
+**4. Cross-modal Attention**:
+- Kết nối giữa Vision Encoder và Text Encoder/Decoder
+- Cho phép text "nhìn" vào image features khi encode/decode
+- Công thức:
+  ```
+  CrossAttention(Q_text, K_img, V_img) = softmax(Q_text × K_img^T / √d) × V_img
+  ```
+
+**Sơ đồ kiến trúc tổng quát**:
 ```
-┌─────────────┐
-│ Vision      │ ← ViT (Vision Transformer)
-│ Encoder     │
-└──────┬──────┘
-       │
-       ▼
-┌─────────────┐
-│ Cross-modal │ ← Attention mechanism
-│ Attention   │
-└──────┬──────┘
-       │
-       ▼
-┌─────────────┐
-│ Text        │ ← BERT-based decoder
-│ Decoder     │
-└─────────────┘
+Input Image
+    ↓
+[Vision Encoder (ViT)]
+    ↓ Image Features
+[Cross-Modal Attention] ← Text Input (cho Encoder)
+    ↓
+[Text Encoder/Decoder (BERT)]
+    ↓
+Output: Caption
 ```
+
+#### 2.2.3. Pre-training Strategy
+
+BLIP sử dụng 3 objectives trong quá trình pre-training:
+
+**1. Image-Text Contrastive Learning (ITC)**:
+- Mục tiêu: Học alignment giữa image và text
+- Cách hoạt động: Pull positive pairs (ảnh-caption đúng) lại gần nhau, push negative pairs ra xa
+- Loss: Contrastive loss (InfoNCE)
+
+**2. Image-Text Matching (ITM)**:
+- Mục tiêu: Học fine-grained alignment
+- Cách hoạt động: Binary classification - ảnh và text có match không?
+- Loss: Binary cross-entropy
+
+**3. Image-grounded Text Generation (ITG)**:
+- Mục tiêu: Học generate caption từ ảnh
+- Cách hoạt động: Given image, generate caption (autoregressive)
+- Loss: Cross-entropy cho từng token
+
+**Bootstrapping Capability**:
+- BLIP có thể filter noisy captions từ web
+- Tạo ra synthetic captions chất lượng cao
+- Sử dụng chính model để cải thiện dữ liệu training
+
+#### 2.2.4. Fine-tuning cho Image Captioning
+
+Khi fine-tune BLIP cho image captioning:
+
+**Input**:
+- Image: Ảnh sản phẩm (resize về 224×224 hoặc 384×384)
+- Caption: Caption tiếng Việt không dấu (ground truth)
+
+**Process**:
+1. Image qua Vision Encoder → Image features
+2. Image features + Text prefix qua Text Decoder
+3. Decoder sinh caption token by token (autoregressive)
+4. Tính loss với ground truth caption
+
+**Training Objective**:
+```
+Loss = -Σ log P(w_i | image, w_<i)
+```
+- w_i: Token thứ i
+- w_<i: Các token trước đó
+
+**Generation Parameters**:
+- `max_new_tokens`: Số token tối đa (thường 50-77)
+- `num_beams`: Số beams cho beam search (thường 3-5)
+- `repetition_penalty`: Penalty cho lặp từ (thường 1.2)
+- `length_penalty`: Khuyến khích độ dài (thường 1.0-1.2)
+
+#### 2.2.5. Ưu điểm của BLIP
+
+1. **Unified Architecture**: Một model cho nhiều tasks (captioning, retrieval, VQA)
+2. **Bootstrapping**: Tự cải thiện dữ liệu training
+3. **Efficient**: Tốc độ inference nhanh hơn so với các model lớn khác
+4. **Flexible**: Dễ fine-tune cho các ngôn ngữ khác (như tiếng Việt)
+5. **State-of-the-art**: Đạt kết quả tốt trên nhiều benchmarks
+
+#### 2.2.6. Hạn chế
+
+1. **Tokenizer**: Sử dụng BPE tokenizer tiếng Anh, không tối ưu cho tiếng Việt
+2. **Vocabulary**: Vocabulary chủ yếu là tiếng Anh, cần fine-tune để học từ tiếng Việt
+3. **Caption không dấu**: Khi fine-tune trên tiếng Việt, model thường sinh caption không dấu (do tokenizer không hỗ trợ tốt dấu tiếng Việt)
+
+### 2.3. Accent Restoration cho Tiếng Việt
+
+#### 2.3.1. Vấn đề
+
+Tiếng Việt là một ngôn ngữ có dấu (accented language) với 5 loại dấu: sắc (´), huyền (`), hỏi (?), ngã (~), và nặng (.). Việc thiếu dấu có thể làm thay đổi hoàn toàn nghĩa của từ. Ví dụ:
+- "ma" (ma quỷ) vs "má" (mẹ)
+- "ban" (ban hành) vs "bàn" (cái bàn)
+
+Khi fine-tune BLIP cho tiếng Việt, do tokenizer BPE được thiết kế cho tiếng Anh, model thường sinh ra caption không dấu. Điều này gây khó khăn cho người đọc và làm giảm chất lượng caption.
+
+#### 2.3.2. Giải pháp: Accent Restoration
+
+Accent Restoration (Phục hồi dấu) là nhiệm vụ tự động thêm dấu vào text tiếng Việt không dấu. Đây là một bài toán Token Classification trong NLP.
+
+**Mô hình sử dụng**: `peterhung/vietnamese-accent-marker-xlm-roberta`
+
+**Kiến trúc**:
+- Base model: XLM-RoBERTa (Cross-lingual Language Model)
+- Task: Token Classification
+- Input: Text tiếng Việt không dấu (word-level hoặc subword-level)
+- Output: Accent labels cho mỗi token
+
+#### 2.3.3. XLM-RoBERTa
+
+XLM-RoBERTa (Cross-lingual Language Model - RoBERTa) là một mô hình ngôn ngữ đa ngôn ngữ được pre-trained trên 100 ngôn ngữ, bao gồm tiếng Việt. Nó là phiên bản đa ngôn ngữ của RoBERTa.
 
 **Đặc điểm**:
-- Vision Encoder: ViT (Vision Transformer)
-- Text Decoder: BERT-based
-- Cross-modal attention để kết hợp thông tin ảnh và text
+- Pre-trained trên dữ liệu đa ngôn ngữ
+- Sử dụng SentencePiece tokenization với subword units
+- Có prefix "▁" để đánh dấu đầu từ
+- Hỗ trợ tốt tiếng Việt
 
-**Fine-tuning**:
-- Fine-tune trên dataset tiếng Việt
-- Giữ nguyên architecture, chỉ cập nhật weights
-- Training với caption tiếng Việt không dấu
+#### 2.3.4. Cơ chế hoạt động
 
-### 2.3. Accent Restoration
+**Bước 1: Tokenization**
+- Input: "ao khoac the thao nu mau den"
+- Tokenize với XLM-RoBERTa tokenizer:
+  ```
+  ["▁ao", "▁khoac", "▁the", "▁thao", "▁nu", "▁mau", "▁den"]
+  ```
+- Prefix "▁" đánh dấu đây là đầu từ
 
-**Vấn đề**:
-- BLIP sinh caption tiếng Việt không dấu
-- Cần phục hồi dấu để có caption tự nhiên
+**Bước 2: Model Prediction**
+- Mỗi token được đưa qua XLM-RoBERTa
+- Model predict một label (số nguyên) cho mỗi token
+- Label này tương ứng với một accent pattern trong vocabulary
 
-**Giải pháp**:
-- Model: `peterhung/vietnamese-accent-marker-xlm-roberta`
-- Architecture: XLM-RoBERTa + Token Classification
-- Task: Predict accent label cho mỗi token
+**Bước 3: Label Mapping**
+- Labels được map sang accent patterns
+- Format: "raw-vowel" (ví dụ: "ao-áo", "khoac-khoác")
+- Nếu label không match, giữ nguyên token gốc
 
-**Pipeline**:
+**Bước 4: Merge Tokens**
+- Merge các subword tokens có cùng prefix "▁" thành một từ
+- Ví dụ: ["▁kho", "ac"] → "khoac" → "khoác"
+
+**Bước 5: Join Words**
+- Join các từ đã được restore accent thành câu hoàn chỉnh
+- Output: "áo khoác thể thao nữ màu đen"
+
+**Pipeline chi tiết**:
 ```
-Text không dấu
-  ↓ Tokenize
-Tokens
-  ↓ Predict labels
-Accent labels
-  ↓ Merge tokens
-Words có dấu
-  ↓ Join
-Text có dấu
+Text không dấu: "ao khoac the thao nu mau den"
+    ↓
+Tokenize (XLM-RoBERTa)
+    ↓
+["▁ao", "▁khoac", "▁the", "▁thao", "▁nu", "▁mau", "▁den"]
+    ↓
+XLM-RoBERTa Token Classification
+    ↓
+Labels: [label_ao, label_khoac, label_the, ...]
+    ↓
+Map labels to accent patterns
+    ↓
+["áo", "khoác", "thể", "thao", "nữ", "màu", "đen"]
+    ↓
+Join
+    ↓
+"áo khoác thể thao nữ màu đen"
 ```
 
-**Accuracy**: 97%+
+#### 2.3.5. Ưu điểm của phương pháp
+
+1. **Accuracy cao**: Đạt 97%+ accuracy trên test set
+2. **Nhanh**: Inference time ~0.1-0.2s cho một câu
+3. **Nhẹ**: Model size nhỏ hơn nhiều so với các mô hình generation lớn
+4. **Không lỗi ký tự**: Token Classification ít gây lỗi hơn so với generation
+5. **Tương thích**: Hoạt động tốt với output từ BLIP (caption không dấu)
+
+#### 2.3.6. Hạn chế
+
+1. **Context-dependent**: Một số từ có thể có nhiều cách thêm dấu tùy ngữ cảnh
+   - Ví dụ: "ban" có thể là "bàn" (cái bàn) hoặc "ban" (ban hành)
+2. **Unknown words**: Từ mới hoặc từ ngoại lai có thể không được xử lý đúng
+3. **Subword tokens**: Cần merge tokens đúng cách để tránh lỗi
 
 ### 2.4. Evaluation Metrics
+
+Đánh giá chất lượng caption là một thách thức vì không có một metric "hoàn hảo" nào. Mỗi metric có ưu và nhược điểm riêng. Trong dự án này, chúng tôi sử dụng 3 metrics chính: BLEU, ROUGE-L, và SBERT Similarity.
 
 #### 2.4.1. BLEU Score
 
 **Định nghĩa**:
-- Đo độ tương đồng n-gram giữa prediction và reference
-- Range: [0, 1]
-- Càng cao càng tốt
+BLEU (Bilingual Evaluation Understudy) là một metric được phát triển để đánh giá chất lượng machine translation. Nó đo độ tương đồng n-gram giữa prediction và reference.
 
-**Công thức**:
-```
-BLEU = BP × exp(Σ log(p_n))
-```
-- BP: Brevity Penalty
-- p_n: Precision của n-gram
+**Công thức chi tiết**:
+
+1. **N-gram Precision**:
+   ```
+   P_n = (Số n-grams trong prediction xuất hiện trong reference) / (Tổng số n-grams trong prediction)
+   ```
+
+2. **Brevity Penalty (BP)**:
+   ```
+   BP = {
+       1, nếu length(prediction) > length(reference)
+       exp(1 - length(reference)/length(prediction)), nếu không
+   }
+   ```
+   - BP phạt những prediction quá ngắn
+
+3. **BLEU Score**:
+   ```
+   BLEU = BP × exp(Σ_{n=1}^N w_n × log(P_n))
+   ```
+   - N: Số n-gram tối đa (thường N=4)
+   - w_n: Trọng số cho mỗi n-gram (thường đều nhau: w_n = 1/N)
+
+**Ví dụ**:
+- Reference: "áo khoác thể thao nữ màu đen"
+- Prediction: "áo khoác thể thao nữ"
+- 1-grams: "áo", "khoác", "thể", "thao", "nữ" → 5/5 = 1.0
+- 2-grams: "áo khoác", "khoác thể", "thể thao", "thao nữ" → 4/4 = 1.0
+- BP: exp(1 - 5/5) = 1.0
+- BLEU ≈ 1.0
+
+**Ưu điểm**:
+- Đơn giản, dễ tính toán
+- Phổ biến, được sử dụng rộng rãi
+- Phù hợp khi prediction và reference có nhiều từ chung
 
 **Hạn chế**:
-- Chỉ đánh giá n-gram overlap
-- Không đánh giá semantic similarity
-- Thấp khi prediction ngắn hơn reference
+- Chỉ đánh giá n-gram overlap, không đánh giá semantic similarity
+- Thấp khi prediction và reference dùng từ khác nhau nhưng cùng nghĩa
+- Phụ thuộc vào độ dài: prediction ngắn hơn reference thường có BLEU thấp
+- Không phù hợp khi reference dài, nhiều từ thừa (như SEO keywords)
+
+**Trong dự án này**:
+- BLEU score thấp (0.0141) là bình thường vì:
+  - Caption gốc từ Shopee dài, nhiều SEO keywords
+  - Caption sinh ra ngắn gọn, tập trung vào mô tả chính
+  - Mục tiêu khác nhau: SEO vs mô tả tự nhiên
 
 #### 2.4.2. ROUGE-L
 
 **Định nghĩa**:
-- Đo độ tương đồng Longest Common Subsequence (LCS)
-- Range: [0, 1]
-- F1 score của LCS
+ROUGE-L (Recall-Oriented Understudy for Gisting Evaluation - Longest Common Subsequence) đo độ tương đồng dựa trên Longest Common Subsequence (LCS) giữa prediction và reference.
+
+**Longest Common Subsequence (LCS)**:
+- LCS là chuỗi con dài nhất có thể tìm được trong cả prediction và reference
+- Khác với Longest Common Substring, LCS không yêu cầu các phần tử liên tiếp
+
+**Ví dụ**:
+- Reference: "áo khoác thể thao nữ màu đen"
+- Prediction: "áo khoác thể thao nữ"
+- LCS: "áo khoác thể thao nữ" (độ dài 5)
 
 **Công thức**:
-```
-ROUGE-L = F1(LCS)
-```
+
+1. **Precision**:
+   ```
+   P_LCS = |LCS(prediction, reference)| / |prediction|
+   ```
+
+2. **Recall**:
+   ```
+   R_LCS = |LCS(prediction, reference)| / |reference|
+   ```
+
+3. **F1 Score**:
+   ```
+   ROUGE-L = F1_LCS = 2 × (P_LCS × R_LCS) / (P_LCS + R_LCS)
+   ```
+
+**Ví dụ tính toán**:
+- Reference: "áo khoác thể thao nữ màu đen" (6 từ)
+- Prediction: "áo khoác thể thao nữ" (5 từ)
+- LCS: "áo khoác thể thao nữ" (5 từ)
+- P_LCS = 5/5 = 1.0
+- R_LCS = 5/6 = 0.833
+- ROUGE-L = 2 × (1.0 × 0.833) / (1.0 + 0.833) = 0.909
 
 **Ưu điểm**:
-- Đánh giá cấu trúc câu
-- Không phụ thuộc vào thứ tự từ
+- Đánh giá cấu trúc câu, không chỉ n-gram
+- Không phụ thuộc vào thứ tự từ (LCS có thể không liên tiếp)
+- Phù hợp khi prediction và reference có cấu trúc tương tự
+
+**Hạn chế**:
+- Vẫn dựa trên từ overlap, không đánh giá semantic
+- Có thể cao ngay cả khi prediction và reference dùng từ khác nhau nhưng có cấu trúc tương tự
+
+**Trong dự án này**:
+- ROUGE-L = 0.1486 (trung bình)
+- Phản ánh một phần cấu trúc chung giữa prediction và reference
+- Thấp hơn SBERT vì caption gốc có nhiều từ SEO không có trong prediction
 
 #### 2.4.3. SBERT Similarity
 
 **Định nghĩa**:
-- Đo semantic similarity bằng Sentence-BERT embeddings
-- Range: [0, 1] (normalized cosine similarity)
-- Càng cao càng tốt
+SBERT (Sentence-BERT) Similarity đo semantic similarity (độ tương đồng về nghĩa) giữa prediction và reference bằng cách so sánh embeddings của chúng.
 
-**Công thức**:
-```
-Similarity = (cosine_sim(emb_pred, emb_ref) + 1) / 2
-```
+**Sentence-BERT**:
+- Sentence-BERT là một biến thể của BERT được fine-tune để tạo ra sentence embeddings
+- Sử dụng Siamese network architecture
+- Embeddings có thể được so sánh bằng cosine similarity
 
-**Ưu điểm**:
-- Đánh giá semantic similarity
-- Phù hợp khi prediction và reference khác từ nhưng cùng nghĩa
+**Cơ chế hoạt động**:
+
+1. **Encode sentences**:
+   ```
+   emb_pred = SBERT_model.encode(prediction)
+   emb_ref = SBERT_model.encode(reference)
+   ```
+
+2. **Cosine Similarity**:
+   ```
+   cosine_sim = (emb_pred · emb_ref) / (||emb_pred|| × ||emb_ref||)
+   ```
+   - Range: [-1, 1]
+   - 1: Hoàn toàn giống nhau
+   - 0: Không liên quan
+   - -1: Đối lập hoàn toàn
+
+3. **Normalize về [0, 1]**:
+   ```
+   similarity = (cosine_sim + 1) / 2
+   ```
+   - Range: [0, 1]
+   - 1: Hoàn toàn giống nhau về nghĩa
+   - 0: Không liên quan
 
 **Model sử dụng**: `keepitreal/vietnamese-sbert`
+- Model được fine-tune cho tiếng Việt
+- Pre-trained trên dữ liệu tiếng Việt
+- Đạt kết quả tốt trong các tasks semantic similarity
+
+**Ví dụ**:
+- Reference: "áo khoác thể thao nữ màu đen chất lượng cao giá rẻ"
+- Prediction: "áo khoác thể thao nữ màu đen"
+- Mặc dù prediction ngắn hơn và thiếu "chất lượng cao giá rẻ", nhưng semantic similarity vẫn cao vì cả hai đều mô tả cùng một sản phẩm
+
+**Ưu điểm**:
+- Đánh giá semantic similarity, không chỉ từ overlap
+- Phù hợp khi prediction và reference dùng từ khác nhau nhưng cùng nghĩa
+- Phù hợp với mục tiêu thực tế: caption đúng nghĩa sản phẩm
+- Không bị ảnh hưởng bởi độ dài hoặc format (SEO keywords)
+
+**Hạn chế**:
+- Phụ thuộc vào chất lượng của SBERT model
+- Cần model được fine-tune cho ngôn ngữ cụ thể (tiếng Việt)
+- Tính toán chậm hơn BLEU/ROUGE (cần encode embeddings)
+
+**Trong dự án này**:
+- SBERT = 0.6330 (khá tốt)
+- Đây là metric quan trọng nhất vì:
+  - Mục tiêu là tạo caption đúng nghĩa sản phẩm
+  - Caption gốc có nhiều SEO keywords không cần thiết
+  - SBERT đánh giá được semantic similarity tốt hơn
+
+#### 2.4.4. So sánh các Metrics
+
+| Metric | Phạm vi | Ưu điểm | Nhược điểm | Phù hợp khi |
+|--------|---------|---------|------------|-------------|
+| **BLEU** | [0, 1] | Đơn giản, phổ biến | Chỉ n-gram overlap | Prediction và reference có nhiều từ chung |
+| **ROUGE-L** | [0, 1] | Đánh giá cấu trúc | Vẫn dựa trên từ overlap | Cấu trúc tương tự |
+| **SBERT** | [0, 1] | Đánh giá semantic | Phụ thuộc model | Cùng nghĩa nhưng khác từ |
+
+**Kết luận**:
+- Trong dự án này, **SBERT là metric quan trọng nhất** vì nó đánh giá được semantic similarity
+- BLEU và ROUGE-L vẫn hữu ích để đánh giá một phần, nhưng không phản ánh đầy đủ chất lượng caption
+- Kết hợp cả 3 metrics cho đánh giá toàn diện
 
 ---
 
