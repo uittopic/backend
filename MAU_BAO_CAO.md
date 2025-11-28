@@ -703,108 +703,597 @@ SBERT (Sentence-BERT) Similarity đo semantic similarity (độ tương đồng 
 
 ### 3.1. Kiến trúc tổng thể
 
-**Diagram**: System Architecture Diagram
+#### 3.1.1. Tổng quan kiến trúc
+
+Hệ thống được thiết kế theo kiến trúc client-server với REST API, sử dụng mô hình microservices để tách biệt các thành phần chức năng. Kiến trúc này đảm bảo tính mở rộng, dễ bảo trì và hiệu suất cao.
+
+**Nguyên tắc thiết kế**:
+- **Separation of Concerns**: Tách biệt rõ ràng giữa API layer, business logic, và model layer
+- **Modularity**: Mỗi module có trách nhiệm riêng, dễ test và maintain
+- **Scalability**: Có thể mở rộng theo chiều ngang (horizontal scaling)
+- **Performance**: Tối ưu với caching, batch processing, và memory management
+
+#### 3.1.2. Sơ đồ kiến trúc hệ thống
 
 ```
-┌─────────────┐
-│   Client    │
-│  (Mobile/   │
-│    Web)     │
-└──────┬──────┘
-       │ HTTP/REST
-       ▼
-┌─────────────────────┐
-│   FastAPI Server   │
-│  - Routes           │
-│  - Middleware       │
-│  - Rate Limiting    │
-└──────┬──────────────┘
-       │
-       ▼
-┌─────────────────────┐
-│  Caption Service    │
-│  - Image Preprocess │
-│  - Cache Check      │
-└──────┬──────────────┘
-       │
-       ├──────────────┐
-       ▼              ▼
-┌──────────┐   ┌──────────────┐
-│  BLIP    │   │   Accent    │
-│  Model   │──▶│ Restoration │
-└──────────┘   └──────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                        CLIENT LAYER                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │  Web App     │  │  Mobile App  │  │  API Client  │      │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘      │
+└─────────┼──────────────────┼──────────────────┼──────────────┘
+          │                  │                  │
+          └──────────────────┼──────────────────┘
+                             │ HTTP/REST API
+                             │ (JSON, Multipart)
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      API GATEWAY LAYER                       │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │           FastAPI Application Server                 │   │
+│  │  ┌──────────────┐  ┌──────────────┐                │   │
+│  │  │   Routes     │  │  Middleware  │                │   │
+│  │  │  - Caption   │  │  - CORS       │                │   │
+│  │  │  - Batch     │  │  - Auth       │                │   │
+│  │  │  - Health    │  │  - Rate Limit │                │   │
+│  │  └──────────────┘  └──────────────┘                │   │
+│  └──────────────────────────────────────────────────────┘   │
+└───────────────────────────┬────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    BUSINESS LOGIC LAYER                     │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │            Caption Service                          │   │
+│  │  ┌──────────────┐  ┌──────────────┐                │   │
+│  │  │ Image        │  │ Cache        │                │   │
+│  │  │ Preprocess   │  │ Manager      │                │   │
+│  │  │ - Resize     │  │ - Check      │                │   │
+│  │  │ - Convert    │  │ - Store      │                │   │
+│  │  │ - Validate   │  │ - Invalidate │                │   │
+│  │  └──────────────┘  └──────────────┘                │   │
+│  └──────────────────────────────────────────────────────┘   │
+└───────────────────────────┬────────────────────────────────┘
+                              │
+                ┌─────────────┴─────────────┐
+                ▼                           ▼
+┌───────────────────────────┐  ┌───────────────────────────┐
+│      MODEL LAYER           │  │   ACCENT RESTORATION       │
+│  ┌─────────────────────┐   │  │   ┌─────────────────────┐ │
+│  │  BLIP Model         │   │  │   │ XLM-RoBERTa         │ │
+│  │  - Vision Encoder   │───┼──┼──▶│ Token Classifier    │ │
+│  │  - Text Decoder     │   │  │   │ Accent Predictor    │ │
+│  │  - Processor        │   │  │   └─────────────────────┘ │
+│  └─────────────────────┘   │  │                           │
+│                            │  │   ┌─────────────────────┐ │
+│  ┌─────────────────────┐   │  │   │ Token Merger        │ │
+│  │  Model Loader       │   │  │   │ Label Mapper        │ │
+│  │  - Load weights     │   │  │   └─────────────────────┘ │
+│  │  - Device mgmt      │   │  │                           │
+│  └─────────────────────┘   │  └───────────────────────────┘
+└─────────────────────────────┘
 ```
 
-**Mô tả**:
-- Client gửi ảnh qua REST API
-- FastAPI server xử lý request
-- Caption Service kiểm tra cache
-- BLIP model sinh caption không dấu
-- Accent Restoration phục hồi dấu
-- Trả về caption có dấu
+#### 3.1.3. Mô tả các thành phần
+
+**1. Client Layer (Lớp khách hàng)**:
+- **Web App**: Ứng dụng web có thể tích hợp API
+- **Mobile App**: Ứng dụng di động (iOS/Android)
+- **API Client**: Các service khác gọi API
+- Giao tiếp với server qua HTTP/REST API
+
+**2. API Gateway Layer (Lớp cổng API)**:
+- **FastAPI Server**: Framework web hiện đại, tự động generate documentation
+- **Routes**: Định tuyến các endpoint
+  - `/api/caption`: Caption không dấu (single)
+  - `/api/caption/batch`: Caption không dấu (batch)
+  - `/api/caption_full`: Caption có dấu (single)
+  - `/api/caption_full/batch`: Caption có dấu (batch)
+  - `/api/accent/restore`: Restore accent cho text
+  - `/api/health`: Health check
+  - `/api/cache/clear`: Clear cache
+- **Middleware**: Xử lý cross-cutting concerns
+  - CORS: Cho phép cross-origin requests
+  - Authentication: Xác thực API key (optional)
+  - Rate Limiting: Giới hạn số request
+
+**3. Business Logic Layer (Lớp logic nghiệp vụ)**:
+- **Caption Service**: Xử lý logic chính
+  - Image Preprocessing: Resize, convert format, validate
+  - Cache Management: Check cache, store results
+  - Error Handling: Xử lý lỗi và trả về response phù hợp
+  - Orchestration: Điều phối giữa BLIP và Accent Restoration
+
+**4. Model Layer (Lớp mô hình)**:
+- **BLIP Model**: 
+  - Vision Encoder: Trích xuất features từ ảnh
+  - Text Decoder: Sinh caption từ features
+  - Processor: Xử lý ảnh và text
+- **Model Loader**: 
+  - Load model weights từ disk hoặc HuggingFace
+  - Quản lý device (MPS/CUDA/CPU)
+  - Model initialization và optimization
+
+**5. Accent Restoration Layer (Lớp phục hồi dấu)**:
+- **XLM-RoBERTa Token Classifier**: Predict accent labels
+- **Token Merger**: Merge subword tokens thành words
+- **Label Mapper**: Map labels sang accent patterns
+
+#### 3.1.4. Luồng xử lý request
+
+**Luồng xử lý một request đơn giản**:
+
+1. **Client gửi request**:
+   - POST `/api/caption_full`
+   - Content-Type: `multipart/form-data`
+   - Body: Image file
+
+2. **API Gateway nhận request**:
+   - FastAPI parse request
+   - Middleware xử lý (CORS, Auth, Rate Limit)
+   - Route handler nhận request
+
+3. **Business Logic xử lý**:
+   - Caption Service nhận image
+   - Check cache (hash image)
+   - Nếu có cache → Return ngay
+   - Nếu không → Tiếp tục
+
+4. **Image Preprocessing**:
+   - Validate image format
+   - Resize nếu > 512px
+   - Convert RGB
+   - Normalize
+
+5. **BLIP Generation**:
+   - Load image vào processor
+   - Vision Encoder trích xuất features
+   - Text Decoder sinh caption (không dấu)
+   - Decode tokens thành text
+
+6. **Accent Restoration**:
+   - Tokenize caption không dấu
+   - XLM-RoBERTa predict accent labels
+   - Merge tokens và apply accents
+   - Join thành caption có dấu
+
+7. **Cache và Response**:
+   - Cache kết quả (hash image → caption)
+   - Format response JSON
+   - Return cho client
 
 ### 3.2. Pipeline xử lý
 
-**Diagram**: Data Flow Diagram
+#### 3.2.1. Training Pipeline
 
-**Training Pipeline**:
+Training pipeline mô tả quá trình từ dữ liệu thô đến model đã được fine-tune:
+
 ```
-Dataset CSV (7,638 samples)
-  ↓ Split 80/20
-Train (6,110) + Test (1,528)
-  ↓ Preprocess
-Images + Captions
-  ↓ Fine-tune BLIP
-Model weights
-  ↓ Save
-models/blip_vietnamese_80_20/
+┌─────────────────────────────────────────────────────────┐
+│  STEP 1: DATA COLLECTION                                │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ train_bilingual_clean_v2.csv                      │ │
+│  │ - 7,638 samples                                    │ │
+│  │ - Format: image, caption_vi                       │ │
+│  │ - Images: data/images/ (7,443 files)             │ │
+│  └───────────────────────────────────────────────────┘ │
+└───────────────────────────┬─────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│  STEP 2: DATA SPLITTING                                │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ Shuffle với random_state=42                      │ │
+│  │ Split 80/20                                       │ │
+│  │                                                   │ │
+│  │ Train: 6,110 samples (80%)                        │ │
+│  │ Test: 1,528 samples (20%)                        │ │
+│  │                                                   │ │
+│  │ Output:                                          │ │
+│  │ - train_80.csv                                   │ │
+│  │ - test_20.csv                                    │ │
+│  └───────────────────────────────────────────────────┘ │
+└───────────────────────────┬─────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│  STEP 3: DATA PREPROCESSING                            │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ For each sample:                                 │ │
+│  │   1. Load image từ data/images/                  │ │
+│  │   2. Convert to RGB                              │ │
+│  │   3. Resize to 224×224 hoặc 384×384             │ │
+│  │   4. Normalize pixel values                      │ │
+│  │   5. Tokenize caption với BLIP processor        │ │
+│  │   6. Create attention mask                       │ │
+│  │   7. Create labels (ignore padding tokens)       │ │
+│  └───────────────────────────────────────────────────┘ │
+└───────────────────────────┬─────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│  STEP 4: MODEL INITIALIZATION                          │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ Load pretrained BLIP:                             │ │
+│  │ - Salesforce/blip-image-captioning-base          │ │
+│  │ - Vision Encoder: ViT-B/16                        │ │
+│  │ - Text Decoder: BERT-based                        │ │
+│  │ - Processor: BlipProcessor                        │ │
+│  │                                                   │ │
+│  │ Move to device:                                   │ │
+│  │ - MPS (macOS) hoặc CUDA (Linux)                   │ │
+│  │ - Set model.eval() → model.train()                │ │
+│  └───────────────────────────────────────────────────┘ │
+└───────────────────────────┬─────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│  STEP 5: FINE-TUNING                                    │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ Training Arguments:                              │ │
+│  │ - Epochs: 5                                       │ │
+│  │ - Batch size: 2                                  │ │
+│  │ - Learning rate: 5e-5                            │ │
+│  │ - Warmup steps: 500                              │ │
+│  │ - Max length: 77                                 │ │
+│  │                                                   │ │
+│  │ Training Loop:                                   │ │
+│  │ For each epoch:                                  │ │
+│  │   For each batch:                                │ │
+│  │     1. Forward pass                              │ │
+│  │     2. Calculate loss                            │ │
+│  │     3. Backward pass                             │ │
+│  │     4. Update weights                            │ │
+│  │   Evaluate on validation set                    │ │
+│  │   Save best model                                │ │
+│  └───────────────────────────────────────────────────┘ │
+└───────────────────────────┬─────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│  STEP 6: MODEL SAVING                                  │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ Save to: models/blip_vietnamese_80_20/           │ │
+│  │ - config.json                                    │ │
+│  │ - pytorch_model.bin                              │ │
+│  │ - tokenizer_config.json                          │ │
+│  │ - vocab.txt                                      │ │
+│  │ - ...                                            │ │
+│  └───────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────┘
 ```
 
-**Inference Pipeline**:
+**Chi tiết các bước**:
+
+**Bước 1: Data Collection**
+- Dataset gốc: `train_bilingual_clean_v2.csv` với 7,638 samples
+- Mỗi sample gồm: đường dẫn ảnh và caption tiếng Việt không dấu
+- Ảnh được lưu trong thư mục `data/images/`
+
+**Bước 2: Data Splitting**
+- Shuffle dataset với `random_state=42` để đảm bảo reproducibility
+- Chia 80/20: 6,110 samples cho training, 1,528 samples cho testing
+- Lưu thành 2 file CSV riêng biệt
+
+**Bước 3: Data Preprocessing**
+- Load ảnh từ disk và convert sang RGB
+- Resize về kích thước chuẩn (224×224 hoặc 384×384)
+- Normalize pixel values về [0, 1] hoặc standardize
+- Tokenize caption với BLIP processor
+- Tạo attention mask và labels (ignore padding tokens với -100)
+
+**Bước 4: Model Initialization**
+- Load pretrained BLIP từ HuggingFace
+- Chuyển model sang device (MPS cho macOS, CUDA cho Linux)
+- Chuyển từ eval mode sang train mode
+
+**Bước 5: Fine-tuning**
+- Sử dụng HuggingFace Trainer với các tham số đã định
+- Training loop: forward → loss → backward → update
+- Evaluate mỗi epoch và lưu best model
+
+**Bước 6: Model Saving**
+- Lưu model weights, config, và tokenizer
+- Model sẵn sàng cho inference
+
+#### 3.2.2. Inference Pipeline
+
+Inference pipeline mô tả quá trình xử lý một ảnh đầu vào để sinh caption:
+
 ```
-Image Input
-  ↓ Check Cache
-  ├─ Cache hit → Return
-  └─ Cache miss → Continue
-  ↓ Preprocess Image
-  - Resize if > 512px
-  - Convert RGB
-  ↓ BLIP Generation
-  - Load image
-  - Generate caption (no accent)
-  ↓ Accent Restoration
-  - Tokenize
-  - Predict accents
-  - Merge tokens
-  ↓ Cache Result
-  ↓ Return Response
+┌─────────────────────────────────────────────────────────┐
+│  INPUT: Image File                                      │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ - Format: JPEG, PNG, etc.                          │ │
+│  │ - Size: Variable                                    │ │
+│  └───────────────────────────────────────────────────┘ │
+└───────────────────────────┬─────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│  STEP 1: CACHE CHECK                                   │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ 1. Load image vào memory                          │ │
+│  │ 2. Convert to PNG format (standardize)           │ │
+│  │ 3. Calculate MD5 hash                              │ │
+│  │ 4. Check cache với hash key                        │ │
+│  │                                                   │ │
+│  │ IF cache hit AND not expired:                    │ │
+│  │   → Return cached caption (skip to STEP 6)       │ │
+│  │ ELSE:                                             │ │
+│  │   → Continue to STEP 2                           │ │
+│  └───────────────────────────────────────────────────┘ │
+└───────────────────────────┬─────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│  STEP 2: IMAGE PREPROCESSING                           │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ 1. Validate image format                          │ │
+│  │ 2. Convert to RGB (if needed)                     │ │
+│  │ 3. Resize if max dimension > 512px               │ │
+│  │    - Maintain aspect ratio                        │ │
+│  │    - Use LANCZOS resampling                       │ │
+│  │ 4. Normalize pixel values                          │ │
+│  │                                                   │ │
+│  │ Output: PIL Image object (RGB, normalized)      │ │
+│  └───────────────────────────────────────────────────┘ │
+└───────────────────────────┬─────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│  STEP 3: BLIP GENERATION                                │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ 3.1. Process image với BLIP processor            │ │
+│  │      - Convert to tensor                          │ │
+│  │      - Add batch dimension                        │ │
+│  │      - Move to device (MPS/CUDA/CPU)            │ │
+│  │                                                   │ │
+│  │ 3.2. Vision Encoder                               │ │
+│  │      - ViT processes image patches                │ │
+│  │      - Output: Image features F_img               │ │
+│  │                                                   │ │
+│  │ 3.3. Text Decoder (Autoregressive)                │ │
+│  │      For each token:                             │ │
+│  │        - Cross-attention với image features      │ │
+│  │        - Self-attention với previous tokens      │ │
+│  │        - Predict next token                       │ │
+│  │      - Use beam search (num_beams=3)             │ │
+│  │      - Apply repetition penalty (1.2)            │ │
+│  │                                                   │ │
+│  │ 3.4. Decode tokens                                │ │
+│  │      - Convert token IDs to text                 │ │
+│  │      - Remove special tokens                     │ │
+│  │                                                   │ │
+│  │ Output: Caption không dấu (string)               │ │
+│  │ Example: "ao khoac the thao nu mau den"          │ │
+│  └───────────────────────────────────────────────────┘ │
+└───────────────────────────┬─────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│  STEP 4: ACCENT RESTORATION                             │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ 4.1. Tokenize với XLM-RoBERTa tokenizer          │ │
+│  │      - Split text thành words                    │ │
+│  │      - Tokenize với is_split_into_words=True     │ │
+│  │      - Add special tokens ([CLS], [SEP])        │ │
+│  │                                                   │ │
+│  │ 4.2. Predict accent labels                       │ │
+│  │      - Forward pass qua XLM-RoBERTa              │ │
+│  │      - Get logits for each token                 │ │
+│  │      - Argmax to get predicted label             │ │
+│  │                                                   │ │
+│  │ 4.3. Merge subword tokens                         │ │
+│  │      - Identify word boundaries (prefix "▁")     │ │
+│  │      - Merge tokens belonging to same word      │ │
+│  │                                                   │ │
+│  │ 4.4. Apply accent labels                          │ │
+│  │      - Map labels to accent patterns             │ │
+│  │      - Format: "raw-vowel" (e.g., "ao-áo")     │ │
+│  │      - Replace raw text with accented text      │ │
+│  │                                                   │ │
+│  │ 4.5. Join words                                   │ │
+│  │      - Join accented words into sentence         │ │
+│  │                                                   │ │
+│  │ Output: Caption có dấu (string)                  │ │
+│  │ Example: "áo khoác thể thao nữ màu đen"          │ │
+│  └───────────────────────────────────────────────────┘ │
+└───────────────────────────┬─────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│  STEP 5: CACHE STORAGE                                 │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ 1. Create cache entry:                            │ │
+│  │    {                                                │ │
+│  │      "caption": "áo khoác thể thao nữ màu đen",  │ │
+│  │      "expires_at": current_time + TTL,            │ │
+│  │      "created_at": current_time                   │ │
+│  │    }                                               │ │
+│  │ 2. Store với hash key                              │ │
+│  │ 3. TTL: 24 hours (86400 seconds)                  │ │
+│  └───────────────────────────────────────────────────┘ │
+└───────────────────────────┬─────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│  STEP 6: RESPONSE FORMATTING                           │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │ Format JSON response:                             │ │
+│  │ {                                                  │ │
+│  │   "success": true,                                │ │
+│  │   "caption_vi": "áo khoác thể thao nữ màu đen",  │ │
+│  │   "caption_vi_no_accent": "ao khoac...",         │ │
+│  │   "accent_restored": true,                        │ │
+│  │   "device": "mps",                                │ │
+│  │   "cached": false,                                │ │
+│  │   "processing_time": 0.78                          │ │
+│  │ }                                                 │ │
+│  │                                                   │ │
+│  │ Return to client                                  │ │
+│  └───────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────┘
 ```
+
+**Chi tiết các bước**:
+
+**Bước 1: Cache Check**
+- Hash ảnh bằng MD5 để tạo cache key
+- Kiểm tra cache, nếu có và chưa hết hạn → return ngay
+- Giảm tải cho model và tăng tốc độ response
+
+**Bước 2: Image Preprocessing**
+- Validate format và kích thước
+- Resize nếu quá lớn để giảm memory usage
+- Chuẩn hóa format (RGB, normalized)
+
+**Bước 3: BLIP Generation**
+- Process ảnh với BLIP processor
+- Vision Encoder trích xuất features
+- Text Decoder sinh caption với beam search
+- Decode tokens thành text
+
+**Bước 4: Accent Restoration**
+- Tokenize và predict accent labels
+- Merge tokens và apply accents
+- Join thành caption có dấu
+
+**Bước 5: Cache Storage**
+- Lưu kết quả vào cache với TTL 24h
+- Giúp các request sau nhanh hơn
+
+**Bước 6: Response Formatting**
+- Format JSON response với đầy đủ thông tin
+- Return cho client
+
+#### 3.2.3. Batch Processing Pipeline
+
+Khi xử lý nhiều ảnh cùng lúc (batch):
+
+```
+Input: [Image1, Image2, ..., ImageN] (N ≤ 10)
+  ↓
+For each image:
+  ├─ Check cache
+  ├─ If cached → Use cached result
+  └─ If not cached:
+      ├─ Preprocess
+      ├─ BLIP generation
+      ├─ Accent restoration
+      └─ Cache result
+  ↓
+  Cleanup memory every 5 images
+  ↓
+Aggregate results
+  ↓
+Return: {
+  "success": true,
+  "total": N,
+  "results": [
+    {image1_result},
+    {image2_result},
+    ...
+  ],
+  "processing_time": total_time
+}
+```
+
+**Tối ưu hóa batch processing**:
+- Xử lý tuần tự từng ảnh (không parallel) để tránh memory overflow
+- Cleanup memory mỗi 5 ảnh
+- Cache từng ảnh riêng biệt
+- Trả về kết quả cho tất cả ảnh, kể cả ảnh lỗi
 
 ### 3.3. API Design
 
-**Endpoints**:
+#### 3.3.1. RESTful API Principles
 
-| Endpoint | Method | Mô tả | Input | Output |
-|----------|--------|-------|-------|--------|
-| `/api/caption` | POST | Caption không dấu (single) | Image file | Caption + metadata |
-| `/api/caption/batch` | POST | Caption không dấu (batch) | Multiple images | List of captions |
-| `/api/caption_full` | POST | Caption có dấu (single) | Image file | Caption + accent info |
-| `/api/caption_full/batch` | POST | Caption có dấu (batch) | Multiple images | List of captions |
-| `/api/accent/restore` | POST | Restore accent cho text | JSON {text} | Text with accent |
-| `/api/health` | GET | Health check | - | Status info |
-| `/api/cache/clear` | POST | Clear cache | - | Success message |
+API được thiết kế theo nguyên tắc RESTful:
+- **Stateless**: Mỗi request độc lập, không lưu state
+- **Resource-based**: URLs đại diện cho resources
+- **HTTP Methods**: Sử dụng đúng HTTP methods (GET, POST)
+- **JSON Format**: Request/Response dùng JSON
+- **Error Handling**: Trả về HTTP status codes phù hợp
 
-**Request/Response Examples**:
+#### 3.3.2. Endpoints Chi tiết
 
-**Single Caption Request**:
+**1. POST `/api/caption` - Single Caption (Không dấu)**
+
+**Mục đích**: Sinh caption tiếng Việt không dấu cho một ảnh
+
+**Request**:
+```http
+POST /api/caption
+Content-Type: multipart/form-data
+
+file: [image file]
+```
+
+**Response** (Success - 200):
+```json
+{
+  "success": true,
+  "caption_vi": "ao khoac the thao nu mau den",
+  "device": "mps",
+  "cached": false,
+  "processing_time": 0.45
+}
+```
+
+**Response** (Error - 400):
+```json
+{
+  "detail": "Invalid image format. Supported formats: JPEG, PNG, etc."
+}
+```
+
+**2. POST `/api/caption/batch` - Batch Caption (Không dấu)**
+
+**Mục đích**: Sinh caption không dấu cho nhiều ảnh (tối đa 10)
+
+**Request**:
+```http
+POST /api/caption/batch
+Content-Type: multipart/form-data
+
+files: [image1, image2, ..., imageN]
+```
+
+**Response** (Success - 200):
+```json
+{
+  "success": true,
+  "total": 3,
+  "results": [
+    {
+      "index": 0,
+      "filename": "image1.jpg",
+      "caption_vi": "ao khoac the thao nu",
+      "success": true,
+      "cached": false
+    },
+    {
+      "index": 1,
+      "filename": "image2.jpg",
+      "caption_vi": "giay the thao mau trang",
+      "success": true,
+      "cached": true
+    },
+    {
+      "index": 2,
+      "filename": "image3.jpg",
+      "success": false,
+      "error": "Invalid image format"
+    }
+  ],
+  "device": "mps",
+  "processing_time": 2.34
+}
+```
+
+**3. POST `/api/caption_full` - Single Caption (Có dấu)**
+
+**Mục đích**: Sinh caption tiếng Việt có dấu cho một ảnh (pipeline đầy đủ)
+
+**Request**:
 ```http
 POST /api/caption_full
 Content-Type: multipart/form-data
 
-file: [image.jpg]
+file: [image file]
 ```
 
-**Single Caption Response**:
+**Response** (Success - 200):
 ```json
 {
   "success": true,
@@ -817,31 +1306,358 @@ file: [image.jpg]
 }
 ```
 
+**4. POST `/api/caption_full/batch` - Batch Caption (Có dấu)**
+
+**Mục đích**: Sinh caption có dấu cho nhiều ảnh (tối đa 10)
+
+**Request/Response**: Tương tự `/api/caption/batch` nhưng có thêm `caption_vi_no_accent` và `accent_restored`
+
+**5. POST `/api/accent/restore` - Restore Accent cho Text**
+
+**Mục đích**: Test accent restoration với text không cần ảnh
+
+**Request**:
+```http
+POST /api/accent/restore
+Content-Type: application/json
+
+{
+  "text": "ao khoac the thao mau den"
+}
+```
+
+**Response** (Success - 200):
+```json
+{
+  "success": true,
+  "text_no_accent": "ao khoac the thao mau den",
+  "text_with_accent": "áo khoác thể thao màu đen",
+  "device": "mps",
+  "accent_model_loaded": true,
+  "processing_time": 0.12
+}
+```
+
+**6. GET `/api/health` - Health Check**
+
+**Mục đích**: Kiểm tra trạng thái API và models
+
+**Request**:
+```http
+GET /api/health
+```
+
+**Response** (Success - 200):
+```json
+{
+  "status": "healthy",
+  "device": "mps",
+  "blip_model_loaded": true,
+  "accent_model_loaded": true,
+  "cache_enabled": true,
+  "cache_stats": {
+    "total_entries": 150,
+    "valid_entries": 148,
+    "expired_entries": 2
+  }
+}
+```
+
+**7. POST `/api/cache/clear` - Clear Cache**
+
+**Mục đích**: Xóa toàn bộ cache
+
+**Request**:
+```http
+POST /api/cache/clear
+```
+
+**Response** (Success - 200):
+```json
+{
+  "success": true,
+  "message": "Cache đã được xóa"
+}
+```
+
+#### 3.3.3. Request/Response Format
+
+**Request Headers**:
+- `Content-Type`: `multipart/form-data` (cho image upload) hoặc `application/json` (cho text)
+- `Authorization`: `Bearer <api_key>` (nếu enable auth)
+
+**Response Headers**:
+- `Content-Type`: `application/json`
+- `Access-Control-Allow-Origin`: `*` (CORS)
+
+**Response Structure**:
+- **Success**: `{"success": true, ...data...}`
+- **Error**: `{"detail": "error message"}`
+
+**HTTP Status Codes**:
+- `200 OK`: Request thành công
+- `400 Bad Request`: Request không hợp lệ (invalid format, missing file, etc.)
+- `429 Too Many Requests`: Vượt quá rate limit
+- `500 Internal Server Error`: Lỗi server (model not loaded, etc.)
+
 ### 3.4. Database/Cache Design
 
-**Cache Strategy**:
-- **Storage**: In-memory dictionary
-- **Key**: MD5 hash của ảnh (PNG format)
-- **Value**: {caption, expires_at, created_at}
-- **TTL**: 24 giờ (86400 giây)
+#### 3.4.1. Cache Strategy
 
-**Cache Flow**:
+Hệ thống sử dụng in-memory caching để tăng tốc độ xử lý và giảm tải cho model.
+
+**Lý do sử dụng cache**:
+- **Performance**: Tránh regenerate caption cho cùng một ảnh
+- **Cost**: Giảm computation cost (không cần chạy model lại)
+- **User Experience**: Response time nhanh hơn (0.01s vs 0.8s)
+
+**Cache Architecture**:
+```
+┌─────────────────────────────────────────┐
+│         Cache Storage                    │
+│  ┌───────────────────────────────────┐ │
+│  │  In-Memory Dictionary              │ │
+│  │  {                                  │ │
+│  │    "hash1": {                      │ │
+│  │      "caption": "...",             │ │
+│  │      "expires_at": timestamp,      │ │
+│  │      "created_at": timestamp       │ │
+│  │    },                               │ │
+│  │    "hash2": {...},                 │ │
+│  │    ...                              │ │
+│  │  }                                  │ │
+│  └───────────────────────────────────┘ │
+└─────────────────────────────────────────┘
+```
+
+**Cache Key Generation**:
+- Input: Image file
+- Process:
+  1. Load image vào memory
+  2. Convert to PNG format (standardize)
+  3. Calculate MD5 hash
+  4. Use hash as cache key
+- Example: `"a1b2c3d4e5f6..."`
+
+**Cache Value Structure**:
+```python
+{
+  "caption": "áo khoác thể thao nữ màu đen",
+  "expires_at": 1234567890.0,  # Unix timestamp
+  "created_at": 1234560000.0   # Unix timestamp
+}
+```
+
+**TTL (Time To Live)**:
+- Default: 24 hours (86400 seconds)
+- Có thể config qua environment variable `CACHE_TTL`
+- Sau khi hết hạn, entry tự động bị xóa khi check
+
+#### 3.4.2. Cache Operations
+
+**1. Cache Lookup (Check)**:
+```python
+def get_cached_caption(image_hash: str) -> Optional[str]:
+    if image_hash not in cache:
+        return None
+    
+    entry = cache[image_hash]
+    if time.time() > entry['expires_at']:
+        # Expired, delete and return None
+        del cache[image_hash]
+        return None
+    
+    return entry['caption']
+```
+
+**2. Cache Store (Save)**:
+```python
+def set_cached_caption(image_hash: str, caption: str, ttl: int = 86400):
+    cache[image_hash] = {
+        'caption': caption,
+        'expires_at': time.time() + ttl,
+        'created_at': time.time()
+    }
+```
+
+**3. Cache Invalidation (Clear)**:
+```python
+def clear_cache():
+    cache.clear()
+```
+
+**4. Cache Statistics**:
+```python
+def get_cache_stats():
+    now = time.time()
+    valid = sum(1 for e in cache.values() if e['expires_at'] > now)
+    expired = len(cache) - valid
+    return {
+        'total_entries': len(cache),
+        'valid_entries': valid,
+        'expired_entries': expired
+    }
+```
+
+#### 3.4.3. Cache Flow Diagram
+
 ```
 Request Image
-  ↓ Hash Image (MD5)
-  ↓ Check Cache
-  ├─ Found & Valid → Return cached caption
-  └─ Not Found → Generate → Cache → Return
+    ↓
+Load Image → Convert to PNG → Calculate MD5 Hash
+    ↓
+Check Cache with Hash Key
+    ↓
+    ├─ Cache Hit?
+    │   ├─ Yes → Check Expiry
+    │   │   ├─ Valid → Return Cached Caption (0.01s)
+    │   │   └─ Expired → Delete Entry → Continue
+    │   └─ No → Continue
+    ↓
+Generate Caption (BLIP + Accent Restoration)
+    ↓
+Store in Cache (Hash → Caption + Metadata)
+    ↓
+Return Caption
 ```
+
+#### 3.4.4. Cache Limitations và Future Improvements
+
+**Limitations hiện tại**:
+- In-memory: Mất cache khi restart server
+- Single server: Không share cache giữa multiple servers
+- No persistence: Không lưu vào disk
+
+**Future Improvements**:
+- **Redis**: Sử dụng Redis để persistent cache và share giữa servers
+- **Disk Cache**: Lưu cache vào disk để survive server restart
+- **Distributed Cache**: Share cache giữa multiple API servers
 
 ### 3.5. Error Handling
 
-**Các lỗi xử lý**:
-- Invalid image format → 400 Bad Request
-- Image too large → 400 Bad Request
-- Model not loaded → 500 Internal Server Error
-- Rate limit exceeded → 429 Too Many Requests
-- Cache error → Continue without cache
+#### 3.5.1. Error Categories
+
+Hệ thống xử lý các loại lỗi sau:
+
+**1. Client Errors (4xx)**:
+- **400 Bad Request**: Request không hợp lệ
+  - Invalid image format
+  - Missing file
+  - Image too large
+  - Empty file
+- **429 Too Many Requests**: Vượt quá rate limit
+
+**2. Server Errors (5xx)**:
+- **500 Internal Server Error**: Lỗi server
+  - Model not loaded
+  - Inference error
+  - Memory error
+
+**3. Business Logic Errors**:
+- Image processing error
+- Model generation error
+- Accent restoration error
+- Cache error (non-fatal, continue without cache)
+
+#### 3.5.2. Error Handling Strategy
+
+**1. Validation Errors (400)**:
+```python
+# Invalid image format
+if not image.format in ['JPEG', 'PNG', 'WEBP']:
+    raise HTTPException(
+        status_code=400,
+        detail="Invalid image format. Supported: JPEG, PNG, WEBP"
+    )
+
+# Image too large
+if image.size[0] * image.size[1] > MAX_IMAGE_SIZE:
+    raise HTTPException(
+        status_code=400,
+        detail=f"Image too large. Max size: {MAX_IMAGE_SIZE} pixels"
+    )
+```
+
+**2. Rate Limiting Errors (429)**:
+```python
+# Rate limit exceeded
+if rate_limit_exceeded(request):
+    raise HTTPException(
+        status_code=429,
+        detail="Rate limit exceeded. Please try again later."
+    )
+```
+
+**3. Server Errors (500)**:
+```python
+# Model not loaded
+if model is None:
+    raise HTTPException(
+        status_code=500,
+        detail="Model not loaded. Please check server logs."
+    )
+
+# Inference error
+try:
+    caption = generate_caption(image)
+except Exception as e:
+    raise HTTPException(
+        status_code=500,
+        detail=f"Error during caption generation: {str(e)}"
+    )
+```
+
+**4. Non-Fatal Errors (Continue)**:
+```python
+# Cache error (non-fatal)
+try:
+    cached = get_cached_caption(hash)
+except Exception:
+    # Continue without cache
+    cached = None
+
+# Accent restoration error (fallback to no accent)
+try:
+    caption_with_accent = restore_accent(caption_no_accent)
+except Exception:
+    # Fallback to no accent
+    caption_with_accent = caption_no_accent
+    accent_restored = False
+```
+
+#### 3.5.3. Error Response Format
+
+**Standard Error Response**:
+```json
+{
+  "detail": "Error message here"
+}
+```
+
+**Detailed Error Response** (for debugging):
+```json
+{
+  "detail": "Error message",
+  "error_type": "ValidationError",
+  "timestamp": "2024-01-01T12:00:00Z",
+  "request_id": "abc123"
+}
+```
+
+#### 3.5.4. Error Logging
+
+Tất cả errors được log để debugging:
+- Log level: ERROR
+- Include: Error message, stack trace, request details
+- Log destination: File hoặc console (configurable)
+
+**Example Log**:
+```
+[ERROR] 2024-01-01 12:00:00 - Caption generation failed
+  Request: POST /api/caption_full
+  Error: CUDA out of memory
+  Stack trace: ...
+```
 
 ---
 
