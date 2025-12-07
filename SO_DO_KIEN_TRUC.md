@@ -310,6 +310,11 @@
                     │                         │
             Cache Hit?                    Cache Miss?
                     │                         │
+                    │                         │
+                    │  Return cached caption  │
+                    │  (skip to Response      │
+                    │   Formatting)           │
+                    │                         │
                     │                         ▼
                     │            ┌────────────────────────┐
                     │            │  Image Preprocessing   │
@@ -363,7 +368,10 @@
                     │  {                     │
                     │    "success": true,    │
                     │    "caption_vi": "...",│
+                    │    "device": "cpu",    │
+                    │    "cached": true/false│
                     │    "processing_time":  │
+                    │      (0.01s if cached) │
                     │  }                     │
                     └────────────────────────┘
 ```
@@ -708,7 +716,26 @@ Client          API Gateway      Caption Service    Cache        BLIP Model    A
 │                          ▼                                       │
 │              ┌──────────────────────────┐                        │
 │              │  Return Caption         │                        │
-│              │  (cached or new)        │                        │
+│              │                        │                        │
+│              │  Cache Hit Response:   │                        │
+│              │  {                     │                        │
+│              │    "success": true,   │                        │
+│              │    "caption_vi": "...",│                        │
+│              │    "device": "cpu",   │                        │
+│              │    "cached": true,     │                        │
+│              │    "processing_time": │                        │
+│              │      0.01              │                        │
+│              │  }                     │                        │
+│              │                        │                        │
+│              │  Cache Miss Response:  │                        │
+│              │  {                     │                        │
+│              │    "success": true,   │                        │
+│              │    "caption_vi": "...",│                        │
+│              │    "device": "cpu",   │                        │
+│              │    "cached": false,   │                        │
+│              │    "processing_time": │                        │
+│              │      0.8               │                        │
+│              │  }                     │                        │
 │              └──────────────────────────┘                        │
 └───────────────────────────────────────────────────────────────────┘
 ```
