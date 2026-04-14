@@ -16,7 +16,7 @@ import torch
 
 from app.core.model_loader import model, processor
 from app.core.accent_restoration_loader import restore_accent
-from app.core.config import DATA_DIR, IMAGES_DIR, CSV_PATH, MAX_NEW_TOKENS, NUM_BEAMS, REPETITION_PENALTY, LENGTH_PENALTY, NO_REPEAT_NGRAM_SIZE
+from app.core.config import DATA_DIR, IMAGES_DIR, CSV_PATH, MAX_NEW_TOKENS, NUM_BEAMS, REPETITION_PENALTY, NO_REPEAT_NGRAM_SIZE
 
 
 DEFAULT_TEST_CSV = DATA_DIR / "test_20.csv"
@@ -62,7 +62,6 @@ def generate_caption(image_path: Path):
             max_new_tokens=MAX_NEW_TOKENS,
             num_beams=NUM_BEAMS,
             repetition_penalty=REPETITION_PENALTY,
-            length_penalty=LENGTH_PENALTY,
             no_repeat_ngram_size=NO_REPEAT_NGRAM_SIZE,
             early_stopping=True,
         )
