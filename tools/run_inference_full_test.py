@@ -94,12 +94,25 @@ def _looks_broken_caption(text: str) -> bool:
     cleaned = text.strip()
     if not cleaned:
         return True
-    if len(cleaned) <= 2:
+    if len(cleaned) <= 3:
         return True
     if "##" in cleaned:
         return True
-    # Kiểm tra có ít nhất 1 ký tự Latin hoặc tiếng Việt có dấu
+    # Kiểm tra token lạ của tokenizer [unusedXXX]
+    if "[unused" in cleaned:
+        return True
+    # Kiểm tra có quá nhiều ký tự không phải chữ cái Latin/Vietnamese
+    # Các ký tự hợp lệ: A-Z a-z 0-9 và tiếng Việt có dấu (À-ỹ)
+    # Ký tự đáng nghi: Trung (子), Nhật (ん, り), Hebrew (ɬ), Arabic, ký tự đặc biệt
     import re
+    # Đếm tổng số ký tự
+    total_chars = len(cleaned)
+    # Đếm số ký tự hợp lệ (Latin, số, tiếng Việt)
+    valid_chars = len(re.findall(r"[A-Za-z0-9À-ỹ\s]", cleaned))
+    # Nếu tỷ lệ ký tự hợp lệ < 60% → broken
+    if total_chars > 0 and (valid_chars / total_chars) < 0.6:
+        return True
+    # Kiểm tra có ít nhất 1 ký tự Latin/tiếng Việt (đảm bảo có nội dung)
     if not re.search(r"[A-Za-z0-9À-ỹ]", cleaned):
         return True
     return False
