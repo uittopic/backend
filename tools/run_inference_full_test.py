@@ -8,6 +8,7 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 import csv
+import re
 from typing import Any
 
 from PIL import Image
@@ -54,6 +55,7 @@ def generate_caption(image_path: Path):
         model_cpu = model_any
         inputs_cpu = inputs_pt
 
+    # Primary generation
     with torch.no_grad():
         output = model_cpu.generate(  # type: ignore
             **inputs_cpu,
@@ -65,13 +67,42 @@ def generate_caption(image_path: Path):
             early_stopping=True,
         )
 
+    # Decode
+    caption_no_accent = processor_any.decode(output[0], skip_special_tokens=True)  # type: ignore
+
+    # Fallback nếu caption bị "broken"
+    if _looks_broken_caption(caption_no_accent):
+        fallback_kwargs = {
+            "max_new_tokens": MAX_NEW_TOKENS,
+            "num_beams": 1,
+            "early_stopping": True,
+        }
+        with torch.no_grad():
+            fallback_output = model_cpu.generate(**inputs_cpu, **fallback_kwargs)  # type: ignore
+        caption_no_accent = processor_any.decode(fallback_output[0], skip_special_tokens=True)  # type: ignore
+
     if device.type == "mps":
         model_any.to(device)  # type: ignore
 
-    caption_no_accent = processor_any.decode(output[0], skip_special_tokens=True)  # type: ignore
     caption_with_accent = restore_accent(caption_no_accent)
 
     return caption_no_accent, caption_with_accent
+
+
+def _looks_broken_caption(text: str) -> bool:
+    """Kiểm tra xem caption có bị 'broken' (token lạ, quá ngắn, không có chữ cái) không"""
+    cleaned = text.strip()
+    if not cleaned:
+        return True
+    if len(cleaned) <= 2:
+        return True
+    if "##" in cleaned:
+        return True
+    # Kiểm tra có ít nhất 1 ký tự Latin hoặc tiếng Việt có dấu
+    import re
+    if not re.search(r"[A-Za-z0-9À-ỹ]", cleaned):
+        return True
+    return False
 
 
 def main():
