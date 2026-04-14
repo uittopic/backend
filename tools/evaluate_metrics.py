@@ -89,9 +89,10 @@ def calculate_bleu(prediction: str, reference: str) -> float:
             return 0.0
 
         # Dùng smoothing để tránh score = 0 khi không có n-gram match
-        smoothing = SmoothingFunction().method1
-        score = sentence_bleu([ref_tokens], pred_tokens, smoothing_function=smoothing)
-        return score
+        smoothing = SmoothingFunction().method1  # type: ignore
+        bleu_score_raw = sentence_bleu([ref_tokens], pred_tokens, smoothing_function=smoothing)  # type: ignore[reportArgumentType]
+        bleu_score = float(bleu_score_raw) if bleu_score_raw is not None else 0.0  # type: ignore[reportArgumentType]
+        return bleu_score
     except Exception as e:
         print(f"⚠️  Lỗi tính BLEU: {e}")
         return 0.0
@@ -105,7 +106,7 @@ def calculate_rouge_l(prediction: str, reference: str) -> float:
         return 0.0
 
     try:
-        scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
+        scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)  # type: ignore
         scores = scorer.score(reference, prediction)
         return scores["rougeL"].fmeasure
     except Exception as e:
@@ -207,13 +208,13 @@ def evaluate_predictions(
     if use_sbert and SBERT_AVAILABLE:
         print("🔄 Đang load Sentence-BERT model...")
         try:
-            sbert_model = SentenceTransformer(SBERT_MODEL_NAME)
+            sbert_model = SentenceTransformer(SBERT_MODEL_NAME)  # type: ignore
             print(f"✅ Đã load model: {SBERT_MODEL_NAME}")
         except Exception as e:
             print(f"⚠️  Không thể load {SBERT_MODEL_NAME}: {e}")
             try:
                 print(f"🔄 Thử load fallback model: {FALLBACK_SBERT_MODEL}")
-                sbert_model = SentenceTransformer(FALLBACK_SBERT_MODEL)
+                sbert_model = SentenceTransformer(FALLBACK_SBERT_MODEL)  # type: ignore
                 print(f"✅ Đã load fallback model")
             except Exception as e2:
                 print(f"⚠️  Không thể load fallback model: {e2}")

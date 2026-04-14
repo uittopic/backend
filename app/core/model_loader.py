@@ -7,6 +7,10 @@ from transformers import BlipProcessor, BlipForConditionalGeneration
 import torch
 from app.core.config import MODEL_PATH, PRETRAINED_MODEL, get_device, synchronize_device
 
+# Type aliases
+BlipModel = BlipForConditionalGeneration
+BlipProcessorType = BlipProcessor
+
 # Load processor và model BLIP (caption không dấu)
 print(f"🔄 Đang load BLIP model từ {MODEL_PATH}...")
 device = get_device()
@@ -26,8 +30,9 @@ else:
     print("✅ Đã load pretrained model (chưa fine-tune tiếng Việt)")
 
 # Chuyển model sang device và tối ưu
-model.to(device)
-model.eval()
+blip_model: BlipForConditionalGeneration = model  # type: ignore
+blip_model.to(device)  # type: ignore
+blip_model.eval()
 
 # Tối ưu cho MPS: Set model to half precision nếu không phải MPS (MPS chưa hỗ trợ tốt fp16)
 # Giữ nguyên float32 cho MPS để đảm bảo stability
@@ -47,7 +52,7 @@ try:
     if hasattr(torch, 'compile') and device != "mps":
         # torch.compile() chưa hỗ trợ tốt MPS, chỉ dùng cho CUDA/CPU
         print("⚡ Đang compile model để tăng tốc inference...")
-        model = torch.compile(model, mode="reduce-overhead")
+        blip_model = torch.compile(blip_model, mode="reduce-overhead")  # type: ignore
         print("✅ Model đã được compile")
 except Exception as e:
     # Nếu không compile được, vẫn dùng model bình thường

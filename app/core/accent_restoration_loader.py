@@ -8,6 +8,7 @@ from transformers import AutoTokenizer, AutoModelForTokenClassification
 import torch
 import numpy as np
 from huggingface_hub import hf_hub_download
+from typing import Optional
 from app.core.config import get_device, ACCENT_MODEL_NAME, ACCENT_MODEL_PATH, synchronize_device
 
 print(f"🔄 Đang load Accent Restoration Model ({ACCENT_MODEL_NAME})...")
@@ -19,7 +20,7 @@ accent_model = None
 label_list = None
 device = get_device()
 
-def load_tags_from_huggingface(model_name: str) -> list:
+def load_tags_from_huggingface(model_name: str) -> Optional[list]:
     """
     Tải file selected_tags_names.txt từ HuggingFace
     """
@@ -62,7 +63,7 @@ try:
             raise Exception("Không thể load tags. Vui lòng tải file selected_tags_names.txt từ HuggingFace.")
     
     # Move model to device
-    accent_model.to(device)
+    accent_model.to(device)  # type: ignore
     accent_model.eval()
     
     # Synchronize device sau khi load model (quan trọng cho MPS)

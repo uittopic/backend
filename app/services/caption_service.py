@@ -7,8 +7,9 @@ cho macOS (MPS) cũng như các backend khác.
 from __future__ import annotations
 
 import io
+import re
 from dataclasses import dataclass, asdict
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import torch
 from PIL import Image
@@ -27,11 +28,19 @@ from app.core.config import (
     get_device,
     synchronize_device,
 )
-from app.core.model_loader import model, processor
+from app.core.model_loader import model as _model, processor as _processor
 from app.utils.cache import get_cached_caption, get_image_hash, set_cached_caption
 
-# Pillow 10 đổi tên constant, fallback để tránh crash khi chạy trên mac cũ
-RESAMPLING = getattr(Image, "Resampling", Image)
+# Resolve type confusion: pyright misidentifies imported model/processor as tuples
+model: Any = _model  # type: ignore
+processor: Any = _processor  # type: ignore
+
+# Pillow 10+ dùng Resampling enum
+try:
+    _resampling_cls = Image.Resampling
+except AttributeError:
+    _resampling_cls = Image
+RESAMPLING = getattr(_resampling_cls, "LANCZOS", 1)  # fallback cho Pillow cũ
 
 GENERATION_KWARGS: Dict[str, object] = {
     "max_new_tokens": MAX_NEW_TOKENS,
@@ -54,7 +63,6 @@ class CaptionResult:
 
     def to_payload(self) -> Dict[str, object]:
         payload = asdict(self)
-        # Không expose key None để response gọn hơn
         if self.caption_vi_no_accent is None:
             payload.pop("caption_vi_no_accent", None)
         return payload
@@ -72,47 +80,95 @@ def _prepare_image(image: Image.Image) -> Image.Image:
     """Resize ảnh nếu quá lớn để tiết kiệm VRAM (đặc biệt cho MPS)."""
     if MAX_IMAGE_SIZE and max(image.size) > MAX_IMAGE_SIZE:
         image = image.copy()
-        image.thumbnail((MAX_IMAGE_SIZE, MAX_IMAGE_SIZE), RESAMPLING.LANCZOS)
+        image.thumbnail((MAX_IMAGE_SIZE, MAX_IMAGE_SIZE), RESAMPLING)  # type: ignore
     return image
+
+
+def _normalize_subword_text(text: str) -> str:
+    """Làm sạch token subword ##xxx."""
+    tokens = text.strip().split()
+    merged_tokens = []
+    for token in tokens:
+        if token.startswith("##"):
+            piece = token[2:]
+            if not piece:
+                continue
+            if merged_tokens:
+                merged_tokens[-1] = f"{merged_tokens[-1]}{piece}"
+            else:
+                merged_tokens.append(piece)
+        else:
+            merged_tokens.append(token)
+    merged = " ".join(merged_tokens)
+    merged = re.sub(r"\s+", " ", merged).strip()
+    return merged
+
+
+def _looks_broken_caption(text: str) -> bool:
+    cleaned = text.strip()
+    if not cleaned:
+        return True
+    if len(cleaned) <= 2:
+        return True
+    if "##" in cleaned:
+        return True
+    if not re.search(r"[A-Za-z0-9À-ỹ]", cleaned):
+        return True
+    return False
+
+
+def _decode_caption(output_tensor: torch.Tensor) -> str:
+    if hasattr(processor, "tokenizer") and processor.tokenizer is not None:
+        caption = processor.tokenizer.decode(output_tensor[0], skip_special_tokens=True)  # type: ignore
+    else:
+        caption = processor.decode(output_tensor[0], skip_special_tokens=True)  # type: ignore
+    return _normalize_subword_text(caption)
 
 
 def _run_blip(image: Image.Image) -> str:
     """Chạy BLIP model để sinh caption không dấu."""
     device = get_device()
-    # Convert device string to torch.device object
     device_obj = torch.device(device)
     prepared_image = _prepare_image(image)
-    inputs = processor(images=prepared_image, return_tensors="pt").to(device_obj)
-    
-    # Fix cho MPS: Chuyển model về CPU khi generate vì MPS không hỗ trợ tốt attention_mask auto-inference
-    # BLIP sẽ tự tạo input_ids cho text decoder, nhưng trên MPS cần attention_mask rõ ràng
-    # Cách đơn giản nhất: chuyển về CPU cho text decoder generation
+    inputs = processor(images=prepared_image, return_tensors="pt").to(device_obj)  # type: ignore
+
+    # MPS: chuyển model về CPU để generate
     if device == "mps":
-        # Chuyển model về CPU tạm thời cho generation
-        model_cpu = model.cpu()
+        model_cpu = model.cpu()  # type: ignore
         inputs_cpu = {k: v.cpu() if hasattr(v, "cpu") else v for k, v in inputs.items()}
     else:
         model_cpu = model
         inputs_cpu = inputs
 
     with torch.no_grad():
-        output = model_cpu.generate(**inputs_cpu, **GENERATION_KWARGS)
-    
-    # Chuyển output về device ban đầu và model về MPS lại
+        output = model_cpu.generate(**inputs_cpu, **GENERATION_KWARGS)  # type: ignore
+
+    output_cpu = output.detach().cpu()
+    caption = _decode_caption(output_cpu)
+
+    if _looks_broken_caption(caption):
+        fallback_kwargs = dict(GENERATION_KWARGS)
+        fallback_kwargs["num_beams"] = 1
+        fallback_kwargs["repetition_penalty"] = 1.0
+        fallback_kwargs["do_sample"] = False
+        fallback_kwargs.pop("no_repeat_ngram_size", None)
+
+        with torch.no_grad():
+            fallback_output = model_cpu.generate(**inputs_cpu, **fallback_kwargs)  # type: ignore
+        fallback_output_cpu = fallback_output.detach().cpu()
+        fallback_caption = _decode_caption(fallback_output_cpu)
+
+        if not _looks_broken_caption(fallback_caption):
+            caption = fallback_caption
+        del fallback_output
+
     if device == "mps":
-        output = output.to(device_obj)
-        model.to(device_obj)  # Chuyển model về MPS lại
+        model.to(device_obj)  # type: ignore
         synchronize_device()
     else:
         synchronize_device()
 
-    if hasattr(processor, "tokenizer") and processor.tokenizer is not None:
-        caption = processor.tokenizer.decode(output[0], skip_special_tokens=True)
-    else:
-        caption = processor.decode(output[0], skip_special_tokens=True)
-
-    # Cleanup tensors: move về CPU rồi release
-    output = output.detach().cpu()
+    output = output_cpu
     del output
     inputs = {k: v.detach().cpu() if hasattr(v, "detach") else v for k, v in inputs.items()}
     del inputs
@@ -168,4 +224,3 @@ def generate_caption_with_accent(image: Image.Image, use_cache: bool = True) -> 
         device=base_result.device,
         cached=base_result.cached,
     )
-
