@@ -44,11 +44,11 @@ API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "8000"))
 
 # Generation Configuration
-MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "50"))
-NUM_BEAMS = int(os.getenv("NUM_BEAMS", "5"))  # Tối ưu từ grid search (baseline 3 → 5 cải thiện BLEU +3.8%)
+MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "60"))  # Tăng từ 50 → 60 để sinh caption dài hơn, nhiều keyword
+NUM_BEAMS = int(os.getenv("NUM_BEAMS", "3"))  # Giảm từ 5 → 3: beam cao = câu generic, beam thấp = câu cụ thể hơn
 EARLY_STOPPING = os.getenv("EARLY_STOPPING", "true").lower() == "true"
 NO_REPEAT_NGRAM_SIZE = int(os.getenv("NO_REPEAT_NGRAM_SIZE", "3"))
-REPETITION_PENALTY = float(os.getenv("REPETITION_PENALTY", "1.2"))
+REPETITION_PENALTY = float(os.getenv("REPETITION_PENALTY", "1.05"))  # Giảm từ 1.2 → 1.05: model dám generate thêm keyword
 MAX_IMAGE_SIZE = int(os.getenv("MAX_IMAGE_SIZE", "512"))
 
 # Logging Configuration

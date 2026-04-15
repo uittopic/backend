@@ -186,9 +186,16 @@ def evaluate_predictions(
     if ground_truth_csv and ground_truth_csv.exists():
         with open(ground_truth_csv, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
+            # Thử các tên cột có thể có
+            possible_caption_cols = ["caption_vi", "caption", "caption_en", "text"]
             for row in reader:
                 img_name = row.get("image", "").strip()
-                caption = row.get("caption", "").strip()
+                # Tìm cột caption đầu tiên có giá trị
+                caption = ""
+                for col in possible_caption_cols:
+                    if col in row and row[col].strip():
+                        caption = row[col].strip()
+                        break
                 if img_name and caption:
                     ground_truth[img_name] = caption
         print(f"✅ Đã load {len(ground_truth)} ground truth captions\n")
