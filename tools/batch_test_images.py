@@ -14,6 +14,7 @@ import os
 import time
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 from tqdm import tqdm
 import requests
 from PIL import Image
@@ -109,7 +110,7 @@ def get_all_images(images_dir: Path) -> list:
 def run_batch_test(
     images_dir: Path = IMAGES_DIR,
     output_dir: Path = OUTPUT_DIR,
-    limit: int = None,
+    limit: Optional[int] = None,
     random_sample: bool = False,
     api_url: str = API_URL,
     save_json: bool = True,

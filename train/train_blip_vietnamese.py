@@ -1,7 +1,8 @@
 """
 Fine-tune BLIP model cho tiếng Việt
-Tối ưu cho macOS M1 Pro Max với MPS backend
+Tối ưu cho macOS M1 Max / Apple Silicon với MPS backend
 """
+
 from transformers import BlipProcessor, BlipForConditionalGeneration, Trainer, TrainingArguments
 from transformers.trainer_utils import get_last_checkpoint
 from datasets import Dataset
@@ -23,6 +24,7 @@ BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / "data"
 MODEL_DIR = BASE_DIR / "models"
 LOG_DIR = BASE_DIR / "logs"
+
 DEFAULT_TRAIN_CSV = DATA_DIR / "train_80.csv"
 DEFAULT_VAL_CSV = DATA_DIR / "test_20.csv"
 DEFAULT_BASE_DATASET_CSV = DATA_DIR / "train_bilingual_clean_v2.csv"
@@ -31,18 +33,30 @@ DEFAULT_CAPTION_COLUMN = "caption_vi"
 DEFAULT_MODEL_SUBDIR = "blip_vietnamese_80_20"
 DEFAULT_OUTPUT_DIR = MODEL_DIR / DEFAULT_MODEL_SUBDIR
 
+# Thêm support cho data cleaned v2
+USE_CLEANED_V2 = os.environ.get("USE_CLEANED_V2", "false").strip().lower() == "true"
+if USE_CLEANED_V2:
+    DEFAULT_TRAIN_CSV = DATA_DIR / "train_80_cleaned_v2.csv"
+    DEFAULT_VAL_CSV = DATA_DIR / "test_20.csv"
+    DEFAULT_CAPTION_COLUMN = "caption_vi_cleaned_v2"
+    DEFAULT_VAL_CAPTION_COLUMN = "caption_vi"
+    print("⚙️  Sử dụng TRAIN data cleaned v2 (train_80_cleaned_v2.csv)")
+    print("⚙️  Val/Test dùng cột: caption_vi")
+else:
+    DEFAULT_VAL_CAPTION_COLUMN = DEFAULT_CAPTION_COLUMN
+
 # Tạo thư mục nếu chưa có
 MODEL_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
 
+
 def get_device() -> str:
-    """Xác định device tối ưu cho macOS M1"""
+    """Xác định device tối ưu cho macOS M1 / GPU / CPU."""
     if torch.backends.mps.is_available():
         return "mps"
-    elif torch.cuda.is_available():
+    if torch.cuda.is_available():
         return "cuda"
-    else:
-        return "cpu"
+    return "cpu"
 
 
 def get_train_ratio() -> float:
@@ -104,7 +118,11 @@ def load_or_create_splits(
     train_df.to_csv(train_csv, index=False)
     val_df.to_csv(val_csv, index=False)
 
-    print(f"✅ Đã tạo train/test split:\n   • Train ({len(train_df)} samples): {train_csv}\n   • Test  ({len(val_df)} samples): {val_csv}")
+    print(
+        f"✅ Đã tạo train/test split:\n"
+        f"   • Train ({len(train_df)} samples): {train_csv}\n"
+        f"   • Test  ({len(val_df)} samples): {val_csv}"
+    )
     return train_df, val_df
 
 
@@ -151,6 +169,7 @@ def estimate_vietnamese_ratio(df: pd.DataFrame, caption_column: str) -> float:
     has_vi = texts.map(lambda s: bool(VI_DIACRITIC_RE.search(str(s))))
     return float(has_vi.mean())
 
+
 print("=" * 60)
 print("🚀 Bắt đầu Fine-tune BLIP cho tiếng Việt")
 print("=" * 60)
@@ -161,21 +180,37 @@ TRAIN_CSV_PATH = to_absolute_path(resolve_csv_path("TRAIN_CSV_PATH", DEFAULT_TRA
 VAL_CSV_PATH = to_absolute_path(resolve_csv_path("VAL_CSV_PATH", DEFAULT_VAL_CSV))
 BASE_DATASET_CSV = to_absolute_path(resolve_csv_path("BASE_DATASET_CSV", DEFAULT_BASE_DATASET_CSV))
 IMAGE_DIR = to_absolute_path(resolve_csv_path("IMAGE_DIR", DEFAULT_IMAGE_DIR))
+
 CAPTION_COLUMN = os.environ.get("CAPTION_COLUMN", DEFAULT_CAPTION_COLUMN).strip() or DEFAULT_CAPTION_COLUMN
+VAL_CAPTION_COLUMN = os.environ.get("VAL_CAPTION_COLUMN", DEFAULT_VAL_CAPTION_COLUMN).strip() or DEFAULT_VAL_CAPTION_COLUMN
+print(f"⚙️  Train caption column: {CAPTION_COLUMN}")
+print(f"⚙️  Val/Test caption column: {VAL_CAPTION_COLUMN}")
+
 TRAIN_RATIO = get_train_ratio()
 model_output_env = os.environ.get("MODEL_OUTPUT_DIR")
 MODEL_OUTPUT_DIR = to_absolute_path(Path(model_output_env) if model_output_env else DEFAULT_OUTPUT_DIR)
-MODEL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-TRAIN_BATCH_SIZE = int(os.environ.get("TRAIN_BATCH_SIZE", "2"))
-EVAL_BATCH_SIZE = int(os.environ.get("EVAL_BATCH_SIZE", "2"))
+
+# Tạo output dir lúc save/checkpoint; không ép mkdir sớm để tránh nhầm resume/output trống
+MODEL_OUTPUT_DIR.parent.mkdir(parents=True, exist_ok=True)
+
+device = get_device()
+
+# Mặc định tối ưu cho Mac M1 Max 64GB, nhưng vẫn cho phép override qua env
+default_train_bs = "4" if device == "mps" else "2"
+default_eval_bs = "4" if device == "mps" else "2"
+default_map_bs = "20" if device == "mps" else "10"
+default_grad_acc = "2" if device == "mps" else "1"
+
+TRAIN_BATCH_SIZE = int(os.environ.get("TRAIN_BATCH_SIZE", default_train_bs))
+EVAL_BATCH_SIZE = int(os.environ.get("EVAL_BATCH_SIZE", default_eval_bs))
 NUM_EPOCHS = int(os.environ.get("NUM_EPOCHS", "5"))
 LEARNING_RATE = float(os.environ.get("LEARNING_RATE", "5e-5"))
 WARMUP_STEPS = int(os.environ.get("WARMUP_STEPS", "500"))
 MAX_LENGTH = int(os.environ.get("MAX_LENGTH", "77"))
-MAP_BATCH_SIZE = int(os.environ.get("MAP_BATCH_SIZE", "10"))
+MAP_BATCH_SIZE = int(os.environ.get("MAP_BATCH_SIZE", default_map_bs))
 MAX_TRAIN_SAMPLES = int(os.environ.get("MAX_TRAIN_SAMPLES", "0"))
 MAX_VAL_SAMPLES = int(os.environ.get("MAX_VAL_SAMPLES", "0"))
-GRADIENT_ACCUMULATION_STEPS = int(os.environ.get("GRADIENT_ACCUMULATION_STEPS", "1"))
+GRADIENT_ACCUMULATION_STEPS = int(os.environ.get("GRADIENT_ACCUMULATION_STEPS", default_grad_acc))
 DATALOADER_NUM_WORKERS = int(os.environ.get("DATALOADER_NUM_WORKERS", "2"))
 LOGGING_STEPS = int(os.environ.get("LOGGING_STEPS", "25"))
 SAVE_STRATEGY = os.environ.get("SAVE_STRATEGY", "steps").strip().lower()
@@ -187,6 +222,7 @@ AUTO_RESUME = os.environ.get("AUTO_RESUME", "true").strip().lower() == "true"
 OVERWRITE_OUTPUT_DIR = os.environ.get("OVERWRITE_OUTPUT_DIR", "false").strip().lower() == "true"
 REQUIRE_VI_TARGET = os.environ.get("REQUIRE_VI_TARGET", "true").strip().lower() == "true"
 VI_RATIO_THRESHOLD = float(os.environ.get("VI_RATIO_THRESHOLD", "0.60"))
+ENABLE_TORCH_COMPILE = os.environ.get("ENABLE_TORCH_COMPILE", "false").strip().lower() == "true"
 
 if SAVE_STRATEGY not in {"steps", "epoch"}:
     print(f"⚠️  SAVE_STRATEGY='{SAVE_STRATEGY}' không hợp lệ, dùng 'steps'")
@@ -202,11 +238,11 @@ if EVAL_STRATEGY != SAVE_STRATEGY:
     EVAL_STRATEGY = SAVE_STRATEGY
 
 # Trên macOS, dataloader workers > 0 dễ phát sinh lỗi spawn với script train dạng này.
-# Ưu tiên ổn định để không mất tiến trình train.
 if platform.system() == "Darwin" and DATALOADER_NUM_WORKERS > 0:
     print("⚠️  macOS detected: ép DATALOADER_NUM_WORKERS=0 để tránh lỗi multiprocessing khi train.")
     DATALOADER_NUM_WORKERS = 0
 
+print(f"📱 Device: {device}")
 print(f"⚙️  Train CSV path: {TRAIN_CSV_PATH}")
 print(f"⚙️  Val/Test CSV path: {VAL_CSV_PATH}")
 print(f"⚙️  Base dataset path: {BASE_DATASET_CSV}")
@@ -214,8 +250,16 @@ print(f"⚙️  Image directory: {IMAGE_DIR}")
 print(f"⚙️  Caption column: {CAPTION_COLUMN}")
 print(f"⚙️  Train ratio: {TRAIN_RATIO:.2f}")
 print(f"📦 Model output dir: {MODEL_OUTPUT_DIR}")
-print(f"⚙️  Hyperparams: epochs={NUM_EPOCHS}, train_bs={TRAIN_BATCH_SIZE}, eval_bs={EVAL_BATCH_SIZE}, lr={LEARNING_RATE}, warmup={WARMUP_STEPS}, max_len={MAX_LENGTH}")
-print(f"⚙️  Runtime: grad_acc={GRADIENT_ACCUMULATION_STEPS}, workers={DATALOADER_NUM_WORKERS}, save={SAVE_STRATEGY}, save_steps={SAVE_STEPS}, eval={EVAL_STRATEGY}, eval_steps={EVAL_STEPS}, auto_resume={AUTO_RESUME}, overwrite={OVERWRITE_OUTPUT_DIR}")
+print(
+    f"⚙️  Hyperparams: epochs={NUM_EPOCHS}, train_bs={TRAIN_BATCH_SIZE}, "
+    f"eval_bs={EVAL_BATCH_SIZE}, lr={LEARNING_RATE}, warmup={WARMUP_STEPS}, max_len={MAX_LENGTH}"
+)
+print(
+    f"⚙️  Runtime: grad_acc={GRADIENT_ACCUMULATION_STEPS}, workers={DATALOADER_NUM_WORKERS}, "
+    f"map_bs={MAP_BATCH_SIZE}, save={SAVE_STRATEGY}, save_steps={SAVE_STEPS}, "
+    f"eval={EVAL_STRATEGY}, eval_steps={EVAL_STEPS}, auto_resume={AUTO_RESUME}, "
+    f"overwrite={OVERWRITE_OUTPUT_DIR}, compile={ENABLE_TORCH_COMPILE}"
+)
 print(f"⚙️  Language gate: require_vi={REQUIRE_VI_TARGET}, vi_ratio_threshold={VI_RATIO_THRESHOLD:.2f}")
 if MAX_TRAIN_SAMPLES > 0 or MAX_VAL_SAMPLES > 0:
     print(f"⚙️  Sample caps: max_train={MAX_TRAIN_SAMPLES}, max_val={MAX_VAL_SAMPLES}")
@@ -228,8 +272,9 @@ train_df, val_df = load_or_create_splits(
 )
 train_df = cast(pd.DataFrame, train_df)
 val_df = cast(pd.DataFrame, val_df)
+
 train_df = normalize_dataframe(train_df, CAPTION_COLUMN, "train")
-val_df = normalize_dataframe(val_df, CAPTION_COLUMN, "val/test")
+val_df = normalize_dataframe(val_df, VAL_CAPTION_COLUMN, "val/test")
 
 if MAX_TRAIN_SAMPLES > 0:
     train_df = train_df.head(MAX_TRAIN_SAMPLES).copy()
@@ -240,13 +285,14 @@ vi_ratio_train = estimate_vietnamese_ratio(train_df, CAPTION_COLUMN)
 print(f"🌐 Ước lượng tỷ lệ caption có dấu tiếng Việt (train): {vi_ratio_train:.4f}")
 if REQUIRE_VI_TARGET and vi_ratio_train < VI_RATIO_THRESHOLD:
     raise ValueError(
-        f"Caption column '{CAPTION_COLUMN}' có tỷ lệ tiếng Việt quá thấp ({vi_ratio_train:.4f} < {VI_RATIO_THRESHOLD:.2f}). "
+        f"Caption column '{CAPTION_COLUMN}' có tỷ lệ tiếng Việt quá thấp "
+        f"({vi_ratio_train:.4f} < {VI_RATIO_THRESHOLD:.2f}). "
         "Để đảm bảo output tiếng Việt cho Postman, hãy dùng cột caption tiếng Việt trước khi train."
     )
 
 print(f"📈 Train samples: {len(train_df)}")
 print(f"📈 Val/Test samples: {len(val_df)}")
-print(f"📊 Các cột: {train_df.columns.tolist()}")
+print(f"📊 Các cột train: {train_df.columns.tolist()}")
 
 # === Load BLIP model ===
 print("\n🤖 Đang load BLIP model...")
@@ -260,39 +306,43 @@ if isinstance(model_loaded, tuple):
     model_loaded = model_loaded[0]
 model = cast(BlipForConditionalGeneration, model_loaded)
 
-device = get_device()
-print(f"📱 Device: {device}")
-
-# Tối ưu phép nhân ma trận float32 cho tốc độ tốt hơn (an toàn cho MPS/CUDA/CPU).
+# Tối ưu phép nhân ma trận float32 cho tốc độ tốt hơn
 if hasattr(torch, "set_float32_matmul_precision"):
     torch.set_float32_matmul_precision("high")
 
-# Trainer của transformers sẽ tự move model đúng device theo TrainingArguments.
+# Optional: compile model để tận dụng M1 Max tốt hơn
+if ENABLE_TORCH_COMPILE and hasattr(torch, "compile"):
+    try:
+        print("⚡ Đang compile model để tăng tốc training...")
+        model = cast(BlipForConditionalGeneration, torch.compile(model))
+        print("✅ torch.compile thành công")
+    except Exception as exc:
+        print(f"⚠️  torch.compile thất bại, bỏ qua: {exc}")
+
 print("✅ Model đã được load")
 
-# === Preprocess function ===
-def preprocess(batch: Dict[str, Any]) -> Dict[str, Any]:
-    """Xử lý batch ảnh và caption"""
+# === Preprocess functions ===
+def preprocess_train(batch: Dict[str, Any]) -> Dict[str, Any]:
+    """Xử lý batch ảnh và caption cho train (dùng CAPTION_COLUMN)."""
     images, texts = [], []
-    
+
     for img_name, caption in zip(batch["image"], batch[CAPTION_COLUMN]):
         img_path = IMAGE_DIR / str(img_name)
-        
+
         if not img_path.exists():
             continue
-        
+
         try:
             img = Image.open(img_path).convert("RGB")
             images.append(img)
             texts.append(str(caption))
-        except Exception as e:
-            print(f"⚠️  Lỗi khi load ảnh {img_name}: {e}")
+        except Exception as exc:
+            print(f"⚠️  Lỗi khi load ảnh {img_name}: {exc}")
             continue
-    
+
     if len(images) == 0:
         return {}
-    
-    # Process với processor
+
     processor_callable = cast(Any, processor)
     inputs = processor_callable(
         images=images,
@@ -300,17 +350,55 @@ def preprocess(batch: Dict[str, Any]) -> Dict[str, Any]:
         padding="max_length",
         truncation=True,
         max_length=MAX_LENGTH,
-        return_tensors="pt"
+        return_tensors="pt",
     )
 
-    # Labels cho training (bỏ qua padding tokens khi tính loss)
     input_ids = inputs["input_ids"]
     attention_mask = inputs["attention_mask"]
     labels = input_ids.clone()
     labels[attention_mask == 0] = -100
     inputs["labels"] = labels
-    
     return inputs
+
+
+def preprocess_val(batch: Dict[str, Any]) -> Dict[str, Any]:
+    """Xử lý batch ảnh và caption cho val/test (dùng VAL_CAPTION_COLUMN)."""
+    images, texts = [], []
+
+    for img_name, caption in zip(batch["image"], batch[VAL_CAPTION_COLUMN]):
+        img_path = IMAGE_DIR / str(img_name)
+
+        if not img_path.exists():
+            continue
+
+        try:
+            img = Image.open(img_path).convert("RGB")
+            images.append(img)
+            texts.append(str(caption))
+        except Exception as exc:
+            print(f"⚠️  Lỗi khi load ảnh {img_name}: {exc}")
+            continue
+
+    if len(images) == 0:
+        return {}
+
+    processor_callable = cast(Any, processor)
+    inputs = processor_callable(
+        images=images,
+        text=texts,
+        padding="max_length",
+        truncation=True,
+        max_length=MAX_LENGTH,
+        return_tensors="pt",
+    )
+
+    input_ids = inputs["input_ids"]
+    attention_mask = inputs["attention_mask"]
+    labels = input_ids.clone()
+    labels[attention_mask == 0] = -100
+    inputs["labels"] = labels
+    return inputs
+
 
 # === Tạo datasets ===
 print("\n🔄 Đang tạo datasets...")
@@ -319,25 +407,24 @@ val_dataset = Dataset.from_pandas(val_df)
 
 print("🔄 Đang preprocess train dataset...")
 train_dataset = train_dataset.map(
-    preprocess, 
-    batched=True, 
+    preprocess_train,
+    batched=True,
     batch_size=MAP_BATCH_SIZE,
-    remove_columns=train_dataset.column_names
+    remove_columns=train_dataset.column_names,
 )
 
 print("🔄 Đang preprocess val dataset...")
 val_dataset = val_dataset.map(
-    preprocess, 
-    batched=True, 
+    preprocess_val,
+    batched=True,
     batch_size=MAP_BATCH_SIZE,
-    remove_columns=val_dataset.column_names
+    remove_columns=val_dataset.column_names,
 )
 
 print(f"✅ Train dataset: {len(train_dataset)} samples")
 print(f"✅ Val dataset: {len(val_dataset)} samples")
 
 # === Training Arguments ===
-# Tối ưu cho M1: batch size nhỏ hơn, không dùng fp16 (MPS chưa hỗ trợ tốt)
 training_kwargs = {
     "output_dir": str(MODEL_OUTPUT_DIR),
     "per_device_train_batch_size": TRAIN_BATCH_SIZE,
@@ -353,10 +440,10 @@ training_kwargs = {
     "load_best_model_at_end": True,
     "metric_for_best_model": "eval_loss",
     "greater_is_better": False,
-    "fp16": False,  # MPS chưa hỗ trợ fp16 tốt
+    "fp16": False,  # MPS chưa hỗ trợ fp16 ổn định
     "dataloader_num_workers": DATALOADER_NUM_WORKERS,
     "dataloader_pin_memory": False,  # pin_memory không hiệu quả trên MPS
-    "report_to": "none",  # Không gửi lên wandb/tensorboard
+    "report_to": "none",
     "remove_unused_columns": False,
     "overwrite_output_dir": OVERWRITE_OUTPUT_DIR,
 }
@@ -388,8 +475,7 @@ trainer = Trainer(
     eval_dataset=val_dataset,
 )
 
-# Tương thích với một số version transformers mới, tránh truyền
-# num_items_in_batch vào model.forward của BLIP (không hỗ trợ tham số này).
+# Tránh truyền num_items_in_batch vào model.forward của BLIP
 if hasattr(trainer, "model_accepts_loss_kwargs"):
     setattr(trainer, "model_accepts_loss_kwargs", False)
 
@@ -416,6 +502,6 @@ model.save_pretrained(str(final_model_path))
 processor.save_pretrained(str(final_model_path))
 
 print("=" * 60)
-print(f"✅ Fine-tune BLIP Vietnamese hoàn thành!")
+print("✅ Fine-tune BLIP Vietnamese hoàn thành!")
 print(f"📁 Model đã được lưu tại: {final_model_path}")
 print("=" * 60)

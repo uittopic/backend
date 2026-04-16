@@ -17,7 +17,7 @@ BASE_DIR = Path(__file__).parent.parent.parent
 
 # Model Configuration
 MODEL_NAME = os.getenv("MODEL_NAME", "Salesforce/blip-image-captioning-base")
-MODEL_PATH = BASE_DIR / os.getenv("MODEL_PATH", "models/blip_vietnamese_80_20")
+MODEL_PATH = BASE_DIR / os.getenv("MODEL_PATH", "models/blip_vietnamese_cleaned_v1")
 PRETRAINED_MODEL = os.getenv("PRETRAINED_MODEL", "Salesforce/blip-image-captioning-base")
 
 # Accent Restoration Model Configuration
