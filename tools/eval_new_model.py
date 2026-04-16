@@ -7,7 +7,13 @@ Pipeline: BLIP → Accent Restoration → BLEU score
 - Dùng Accent Restoration (không dấu → có dấu)
 - Dùng đúng GENERATION_KWARGS từ config.py
 - Tách rõ: BLEU không dấu vs BLEU có dấu
+
+Cách dùng:
+  python tools/eval_new_model.py
+  python tools/eval_new_model.py --model-path models/blip_vietnamese_cleaned_v1
+  python tools/eval_new_model.py --model-path models/blip_vietnamese_80_20 --output outputs/metrics_80_20.csv
 """
+import argparse
 import csv
 import re
 import time
@@ -20,10 +26,48 @@ from tqdm import tqdm
 
 # === CONFIG ===
 BASE_DIR = Path(__file__).parent.parent
-MODEL_PATH = BASE_DIR / "models" / "blip_vietnamese_cleaned_v1"
-TEST_CSV = BASE_DIR / "data" / "test_20.csv"
-IMAGE_DIR = BASE_DIR / "data" / "images"
-OUTPUT_CSV = BASE_DIR / "outputs" / "metrics_cleaned_v1.csv"
+
+# CLI args — cho phép override không cần sửa code
+parser = argparse.ArgumentParser(description="Eval script khớp pipeline production")
+parser.add_argument(
+    "--model-path",
+    default="models/blip_vietnamese_cleaned_v1",
+    help="Đường dẫn model (relative to BASE_DIR, hoặc absolute). "
+         "VD: models/blip_vietnamese_cleaned_v1  hoặc  models/blip_vietnamese_80_20",
+)
+parser.add_argument(
+    "--test-csv",
+    default="data/test_20.csv",
+    help="Đường dẫn file test CSV (relative to BASE_DIR). Default: data/test_20.csv",
+)
+parser.add_argument(
+    "--images-dir",
+    default="data/images",
+    help="Thư mục chứa ảnh (relative to BASE_DIR). Default: data/images",
+)
+parser.add_argument(
+    "--output",
+    default=None,
+    help="File CSV output. Mặc định: outputs/metrics_<tên_model>.csv",
+)
+parser.add_argument(
+    "--summary",
+    default=None,
+    help="File JSON summary. Mặc định: outputs/full_eval/evaluation_summary.json",
+)
+_args = parser.parse_args()
+
+MODEL_PATH = BASE_DIR / _args.model_path
+TEST_CSV = BASE_DIR / _args.test_csv
+IMAGE_DIR = BASE_DIR / _args.images_dir
+
+# Auto-generate output filenames nếu không truyền
+model_slug = _args.model_path.rstrip("/").replace("/", "_")
+_default_csv = BASE_DIR / "outputs" / f"metrics_{model_slug}.csv"
+_default_summary = BASE_DIR / "outputs" / "full_eval" / f"evaluation_{model_slug}.json"
+
+OUTPUT_CSV = (BASE_DIR / _args.output) if _args.output else _default_csv
+SUMMARY_JSON = (BASE_DIR / _args.summary) if _args.summary else _default_summary
 
 # Import config (để lấy đúng generation params)
 import sys
@@ -219,8 +263,13 @@ def calculate_bleu(pred: str, ref: str) -> Tuple[float, float, float, float, flo
 
 def main():
     print("=" * 70)
-    print("🚀 ĐÁNH GIÁ MODEL MỚI - KHỚP PIPELINE THẬT")
+    print("🚀 ĐÁNH GIÁ MODEL - KHỚP PIPELINE THẬT")
     print("=" * 70)
+    print()
+    print(f"📦 Model:     {MODEL_PATH}")
+    print(f"📊 Test CSV:  {TEST_CSV}")
+    print(f"🖼️  Images:   {IMAGE_DIR}")
+    print(f"💾 Output:    {OUTPUT_CSV}")
     print()
     print("Pipeline: BLIP → Accent Restoration → BLEU")
     print(f"Generation config: beams={NUM_BEAMS}, max_tokens={MAX_NEW_TOKENS}, "
@@ -328,6 +377,28 @@ def main():
         writer.writeheader()
         writer.writerows(results)
 
+    # Lưu evaluation_summary.json (dùng cho báo cáo)
+    SUMMARY_JSON.parent.mkdir(parents=True, exist_ok=True)
+    summary_data = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "model": str(MODEL_PATH),
+        "test_samples": n,
+        "pipeline": "BLIP → Accent Restoration",
+        "bleu_scores": {
+            "bleu1_no_accent": round(avg["no_accent"]["bleu1"], 4),
+            "bleu4_no_accent": round(avg["no_accent"]["bleu4"], 4),
+            "bleu1_with_accent": round(avg["with_accent"]["bleu1"], 4),
+            "bleu4_with_accent": round(avg["with_accent"]["bleu4"], 4),
+        },
+        "caption_length": {
+            "no_accent": round(avg_len_no_accent, 1),
+            "with_accent": round(avg_len_with_accent, 1),
+        },
+    }
+    import json
+    with open(SUMMARY_JSON, "w", encoding="utf-8") as f:
+        json.dump(summary_data, f, ensure_ascii=False, indent=2)
+
     elapsed = time.time() - start_time
 
     # In kết quả
@@ -355,12 +426,18 @@ def main():
     print(f"  Có dấu:    {avg_len_with_accent:.1f} words avg")
     print()
     print(f"💾 Kết quả chi tiết: {OUTPUT_CSV}")
+    print(f"📋 Summary JSON:       {SUMMARY_JSON}")
     print()
     print("=" * 70)
-    print("SO SÁNH VỚI MODEL CŨ (chạy compare_bleu.py)")
+    print("SO SÁNH 2 MODEL:")
     print("=" * 70)
-    print(f"Model cũ: outputs/metrics_full_test_fixed.csv")
-    print(f"Model mới: {OUTPUT_CSV}")
+    print("Lần 1 (model A):")
+    print(f"  python tools/eval_new_model.py --model-path models/blip_vietnamese_cleaned_v1")
+    print()
+    print("Lần 2 (model B):")
+    print(f"  python tools/eval_new_model.py --model-path models/blip_vietnamese_80_20 --output outputs/metrics_80_20.csv")
+    print()
+    print("Sau đó so sánh 2 file summary JSON.")
 
 
 if __name__ == "__main__":
