@@ -50,10 +50,10 @@ def main():
     print("🔧 FULL PIPELINE - BLIP Vietnamese Upgrade")
     print("="*60)
     print("Bước 1: Data Cleaning v2 (đã có sẵn - skip nếu đã có)")
-    print("Bước 2: Train model với data v2")
+    print("Bước 2: Train model với data  v2")
     print("Bước 3: Post-processing")
     print("Bước 4: Export metrics")
-    print("Bước 5: Detailed evaluation")
+    print("Bước 5: Direct evaluation (eval_direct.py)")
     print("="*60)
 
     # Confirm
@@ -163,13 +163,13 @@ def main():
     ):
         print("⚠️  Export metrics có lỗi nhưng tiếp tục...")
 
-    # Bước 5: Detailed evaluation
+    # Bước 5: Direct evaluation
     if not run_step(
-        "DETAILED EVALUATION (BLEU + ROUGE)",
-        ["python", "tools/eval_detailed.py"],
+        "DIRECT EVALUATION (BLEU + ROUGE)",
+        ["python", "tools/eval_direct.py"],
         check=False
     ):
-        print("⚠️  Detailed eval có lỗi nhưng tiếp tục...")
+        print("  Direct eval co loi nhung tiep tuc...")
 
     print("\n" + "="*60)
     print("✅ PIPELINE HOÀN TẤT!")
