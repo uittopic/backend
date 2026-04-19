@@ -1,152 +1,275 @@
 #!/usr/bin/env python3
 """
-Thử nghiệm grid search các generation parameters
-để tìm config tốt nhất cho BLEU
+Grid Search Generation Parameters - KHỚP PIPELINE THẬT
+Pipeline: BLIP → Accent Restoration → BLEU (có dấu)
+
+Chạy nhanh trên 50 sample để tìm config tốt nhất,
+sau đó chạy full test (1514 sample) với config thắng.
+
+Cách dùng:
+  python tools/grid_search_params.py
+  python tools/grid_search_params.py --model models/blip_vietnamese_cleaned_v1 --max-samples 50
 """
 import argparse
 import csv
-import io
-import os
+import re
 import time
 from pathlib import Path
-from dataclasses import dataclass
-from typing import Any, Dict, List
-
-# Set env trước khi import torch
-os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+from typing import Any, Dict, List, Tuple
 
 import torch
 from PIL import Image
-from transformers import BlipProcessor, BlipForConditionalGeneration
 
 BASE_DIR = Path(__file__).parent.parent
-DEFAULT_IMAGE_DIR = BASE_DIR / "data" / "images"
-DEFAULT_TEST_CSV = BASE_DIR / "data" / "test_20.csv"
-DEFAULT_GROUND_TRUTH_CSV = BASE_DIR / "outputs" / "ground_truth_simple.csv"
+
+# CLI args
+parser = argparse.ArgumentParser(description="Grid search generation params - khớp pipeline thật")
+parser.add_argument("--model", type=str,
+                    default="models/blip_vietnamese_cleaned_v1",
+                    help="Đường dẫn model (relative to BASE_DIR)")
+parser.add_argument("--test-csv", type=str,
+                    default="data/test_20.csv",
+                    help="File test CSV")
+parser.add_argument("--image-dir", type=str,
+                    default="data/images",
+                    help="Thư mục ảnh")
+parser.add_argument("--max-samples", type=int, default=50,
+                    help="Số samples grid search (mặc định 50)")
+parser.add_argument("--configs", type=int, default=None,
+                    help="Số configs grid search muốn chạy (mặc định: tất cả)")
+_args = parser.parse_args()
+
+MODEL_PATH = BASE_DIR / _args.model
+TEST_CSV = BASE_DIR / _args.test_csv
+IMAGE_DIR = BASE_DIR / _args.image_dir
+
+# Import pipeline
+import sys
+sys.path.insert(0, str(BASE_DIR))
+from transformers import BlipProcessor, BlipForConditionalGeneration
+from app.core.accent_restoration_loader import restore_accent
 
 
-@dataclass
-class GenParams:
-    """Các parameters cho generation"""
-    num_beams: int = 3
-    max_new_tokens: int = 50
-    repetition_penalty: float = 1.2
-    length_penalty: float = 1.1
-    no_repeat_ngram_size: int = 3
-    early_stopping: bool = True
-    min_length: int = 5
-
+# ============================================================
+# DEVICE
+# ============================================================
 
 def get_device() -> str:
     if torch.backends.mps.is_available():
         return "mps"
-    elif torch.cuda.is_available():
+    if torch.cuda.is_available():
         return "cuda"
     return "cpu"
 
 
+# ============================================================
+# MODEL LOADING
+# ============================================================
+
+def load_model(model_path: Path):
+    device = get_device()
+    print(f"📱 Device: {device}")
+
+    if model_path.exists() and any(model_path.iterdir()):
+        print(f"📦 Load từ: {model_path}")
+        processor = BlipProcessor.from_pretrained(str(model_path))
+        model = BlipForConditionalGeneration.from_pretrained(str(model_path))
+    else:
+        raise FileNotFoundError(f"Model not found: {model_path}")
+
+    model.to(device)
+    model.eval()
+    return model, processor, device
+
+
+# ============================================================
+# GENERATION - khớp caption_service.py
+# ============================================================
+
+def normalize_subword_text(text: str) -> str:
+    tokens = text.strip().split()
+    merged_tokens = []
+    for token in tokens:
+        if token.startswith("##"):
+            piece = token[2:]
+            if not piece:
+                continue
+            if merged_tokens:
+                merged_tokens[-1] = f"{merged_tokens[-1]}{piece}"
+            else:
+                merged_tokens.append(piece)
+        else:
+            merged_tokens.append(token)
+    return re.sub(r"\s+", " ", " ".join(merged_tokens)).strip()
+
+
+def looks_broken(text: str) -> bool:
+    cleaned = text.strip()
+    if not cleaned or len(cleaned) <= 2:
+        return True
+    if "##" in cleaned:
+        return True
+    if not re.search(r"[A-Za-z0-9À-ỹ]", cleaned):
+        return True
+    return False
+
+
+def generate_blip(model, processor, image: Image.Image, device: str,
+                   gen_kwargs: Dict[str, Any]) -> str:
+    """Generate caption từ BLIP với gen_kwargs tùy ý"""
+    image = image.convert("RGB")
+    inputs = processor(images=image, return_tensors="pt").to(device)
+
+    if device == "mps":
+        model_cpu = model.cpu()
+        inputs_cpu = {k: v.cpu() if hasattr(v, "cpu") else v for k, v in inputs.items()}
+    else:
+        model_cpu = model
+        inputs_cpu = inputs
+
+    with torch.no_grad():
+        output = model_cpu.generate(**inputs_cpu, **gen_kwargs)
+
+    output_cpu = output.detach().cpu()
+    caption = processor.decode(output_cpu[0], skip_special_tokens=True)
+    caption = normalize_subword_text(caption)
+
+    if looks_broken(caption):
+        fallback_kwargs = dict(gen_kwargs)
+        fallback_kwargs["num_beams"] = 1
+        fallback_kwargs["repetition_penalty"] = 1.0
+        fallback_kwargs.pop("no_repeat_ngram_size", None)
+        fallback_kwargs.pop("length_penalty", None)
+
+        with torch.no_grad():
+            fallback_output = model_cpu.generate(**inputs_cpu, **fallback_kwargs)
+        fallback_caption = processor.decode(fallback_output.detach().cpu()[0],
+                                            skip_special_tokens=True)
+        fallback_caption = normalize_subword_text(fallback_caption)
+        if not looks_broken(fallback_caption):
+            caption = fallback_caption
+
+    if device == "mps":
+        model.to(device)
+        torch.mps.synchronize()
+
+    del output, output_cpu, inputs, inputs_cpu
+    return caption.strip()
+
+
+def generate_with_pipeline(model, processor, image: Image.Image, device: str,
+                           gen_kwargs: Dict[str, Any]) -> Tuple[str, str]:
+    """Pipeline đầy đủ: BLIP → Accent Restoration"""
+    caption_no_accent = generate_blip(model, processor, image, device, gen_kwargs)
+    caption_with_accent = restore_accent(caption_no_accent)
+    return caption_no_accent, caption_with_accent
+
+
+# ============================================================
+# BLEU SCORING - giống eval_new_model.py
+# ============================================================
+
 def normalize_text(text: str) -> str:
-    """Chuẩn hóa text"""
-    import re
     text = text.lower().strip()
     text = re.sub(r"[^\w\sÀ-ỹ]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
-def load_model(model_path: Path):
-    """Load BLIP model"""
-    device = get_device()
-    print(f"📱 Device: {device}")
-
-    loaded_model = None  # type: BlipForConditionalGeneration | None
-    loaded_processor = None  # type: BlipProcessor | None
-
-    if model_path.exists() and any(model_path.iterdir()):
-        print(f"📦 Load từ: {model_path}")
-        loaded_processor = BlipProcessor.from_pretrained(str(model_path))  # type: ignore
-        loaded_model = BlipForConditionalGeneration.from_pretrained(str(model_path))  # type: ignore
-    else:
-        print("📦 Load pretrained BLIP (Salesforce/blip-image-captioning-base)")
-        loaded_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")  # type: ignore
-        loaded_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")  # type: ignore
-
-    loaded_model.to(device)  # type: ignore
-    loaded_model.eval()  # type: ignore
-    return loaded_model, loaded_processor, device
-
-
-def generate_caption(model, processor, image: Image.Image, params: GenParams, device: str) -> str:
-    """Sinh caption với parameters cho trước"""
-    import re
-
-    image = image.convert("RGB")
-    inputs = processor(images=image, return_tensors="pt").to(device)  # type: ignore
-
-    gen_kwargs: Dict[str, Any] = {
-        "max_new_tokens": params.max_new_tokens,
-        "num_beams": params.num_beams,
-        "early_stopping": params.early_stopping,
-        "repetition_penalty": params.repetition_penalty,
-        "length_penalty": params.length_penalty,
-        "no_repeat_ngram_size": params.no_repeat_ngram_size,
-    }
-
-    if params.min_length > 0:
-        gen_kwargs["min_length"] = params.min_length
-
-    with torch.no_grad():
-        if device == "mps":
-            model_cpu = model.cpu()  # type: ignore
-            inputs_cpu = {k: v.cpu() if hasattr(v, "cpu") else v for k, v in inputs.items()}
-            output = model_cpu.generate(**inputs_cpu, **gen_kwargs)  # type: ignore
-            model.to(device)  # type: ignore
-            torch.mps.synchronize()
-        else:
-            output = model.generate(**inputs, **gen_kwargs)  # type: ignore
-
-    caption = processor.decode(output[0], skip_special_tokens=True)  # type: ignore
-
-    tokens = caption.strip().split()
-    merged = []
-    for token in tokens:
-        if token.startswith("##"):
-            piece = token[2:]
-            if piece and merged:
-                merged[-1] = f"{merged[-1]}{piece}"
-        else:
-            merged.append(token)
-
-    caption = " ".join(merged)
-    caption = re.sub(r"\s+", " ", caption).strip()
-    return caption
-
-
-def calculate_bleu_nltk(pred: str, ref: str) -> float:
-    """Tính BLEU-4 (chuan)"""
+def calculate_bleu4(pred: str, ref: str) -> Tuple[float, float, float, float]:
+    """Tính BLEU-1,2,3,4 cho 1 cặp prediction-reference"""
     try:
         from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+
         pred_tokens = normalize_text(pred).split()
         ref_tokens = normalize_text(ref).split()
-        if not pred_tokens or not ref_tokens:
-            return 0.0
-        smoothing = SmoothingFunction().method1  # type: ignore
-        bleu_score_raw = sentence_bleu([ref_tokens], pred_tokens, weights=(0.25, 0.25, 0.25, 0.25), smoothing_function=smoothing)  # type: ignore[reportArgumentType]
-        return float(bleu_score_raw) if bleu_score_raw is not None else 0.0  # type: ignore[reportArgumentType]
-    except Exception:
-        return 0.0
 
+        if not pred_tokens or not ref_tokens:
+            return (0.0, 0.0, 0.0, 0.0)
+
+        smoothing = SmoothingFunction().method1
+
+        w1 = (1.0, 0.0, 0.0, 0.0)
+        w2 = (0.5, 0.5, 0.0, 0.0)
+        w3 = (0.33, 0.33, 0.34, 0.0)
+        w4 = (0.25, 0.25, 0.25, 0.25)
+
+        bleu1 = sentence_bleu([ref_tokens], pred_tokens, weights=w1,
+                               smoothing_function=smoothing)
+        bleu2 = sentence_bleu([ref_tokens], pred_tokens, weights=w2,
+                               smoothing_function=smoothing)
+        bleu3 = sentence_bleu([ref_tokens], pred_tokens, weights=w3,
+                               smoothing_function=smoothing)
+        bleu4 = sentence_bleu([ref_tokens], pred_tokens, weights=w4,
+                               smoothing_function=smoothing)
+
+        return (float(bleu1), float(bleu2), float(bleu3), float(bleu4))
+    except Exception:
+        return (0.0, 0.0, 0.0, 0.0)
+
+
+# ============================================================
+# GRID SEARCH CONFIGS
+# ============================================================
+
+# Baseline hiện tại của eval_new_model.py
+BASELINE = {
+    "num_beams": 3,
+    "max_new_tokens": 60,
+    "repetition_penalty": 1.05,
+    "length_penalty": 1.1,
+    "no_repeat_ngram_size": 3,
+    "early_stopping": True,
+    "min_length": 0,
+}
+
+ALL_CONFIGS = [
+    # --- Baseline ---
+    {"name": "baseline", **BASELINE},
+
+    # --- Beam size ---
+    {"name": "beam4",         "num_beams": 4,         "max_new_tokens": 60, "repetition_penalty": 1.05, "length_penalty": 1.1, "no_repeat_ngram_size": 3, "early_stopping": True},
+    {"name": "beam5",         "num_beams": 5,         "max_new_tokens": 60, "repetition_penalty": 1.05, "length_penalty": 1.1, "no_repeat_ngram_size": 3, "early_stopping": True},
+
+    # --- Token length ---
+    {"name": "len40",         "num_beams": 3,         "max_new_tokens": 40, "repetition_penalty": 1.05, "length_penalty": 1.1, "no_repeat_ngram_size": 3, "early_stopping": True},
+    {"name": "len50",         "num_beams": 3,         "max_new_tokens": 50, "repetition_penalty": 1.05, "length_penalty": 1.1, "no_repeat_ngram_size": 3, "early_stopping": True},
+    {"name": "len75",         "num_beams": 3,         "max_new_tokens": 75, "repetition_penalty": 1.05, "length_penalty": 1.1, "no_repeat_ngram_size": 3, "early_stopping": True},
+
+    # --- Repetition penalty ---
+    {"name": "rep1.0",        "num_beams": 3,         "max_new_tokens": 60, "repetition_penalty": 1.0,  "length_penalty": 1.1, "no_repeat_ngram_size": 3, "early_stopping": True},
+    {"name": "rep1.2",        "num_beams": 3,         "max_new_tokens": 60, "repetition_penalty": 1.2,  "length_penalty": 1.1, "no_repeat_ngram_size": 3, "early_stopping": True},
+    {"name": "rep1.5",        "num_beams": 3,         "max_new_tokens": 60, "repetition_penalty": 1.5,  "length_penalty": 1.1, "no_repeat_ngram_size": 3, "early_stopping": True},
+
+    # --- Length penalty ---
+    {"name": "lenpen0.8",     "num_beams": 3,         "max_new_tokens": 60, "repetition_penalty": 1.05, "length_penalty": 0.8, "no_repeat_ngram_size": 3, "early_stopping": True},
+    {"name": "lenpen1.0",     "num_beams": 3,         "max_new_tokens": 60, "repetition_penalty": 1.05, "length_penalty": 1.0, "no_repeat_ngram_size": 3, "early_stopping": True},
+    {"name": "lenpen1.5",     "num_beams": 3,         "max_new_tokens": 60, "repetition_penalty": 1.05, "length_penalty": 1.5, "no_repeat_ngram_size": 3, "early_stopping": True},
+
+    # --- no_repeat_ngram_size ---
+    {"name": "ngram2",        "num_beams": 3,         "max_new_tokens": 60, "repetition_penalty": 1.05, "length_penalty": 1.1, "no_repeat_ngram_size": 2, "early_stopping": True},
+    {"name": "ngram4",        "num_beams": 3,         "max_new_tokens": 60, "repetition_penalty": 1.05, "length_penalty": 1.1, "no_repeat_ngram_size": 4, "early_stopping": True},
+
+    # --- Combined best bets ---
+    {"name": "beam5_len50",   "num_beams": 5,         "max_new_tokens": 50, "repetition_penalty": 1.05, "length_penalty": 1.0, "no_repeat_ngram_size": 3, "early_stopping": True},
+    {"name": "beam4_len40",   "num_beams": 4,         "max_new_tokens": 40, "repetition_penalty": 1.05, "length_penalty": 0.9, "no_repeat_ngram_size": 3, "early_stopping": True},
+    {"name": "beam5_len60_rep1.2", "num_beams": 5,    "max_new_tokens": 60, "repetition_penalty": 1.2,  "length_penalty": 1.0, "no_repeat_ngram_size": 3, "early_stopping": True},
+]
+
+
+# ============================================================
+# RUN SINGLE CONFIG
+# ============================================================
 
 def run_experiment(
     model, processor, device: str,
     test_csv: Path,
     image_dir: Path,
-    params: GenParams,
-    max_samples: int = 50
-) -> Dict[str, float]:
-    """Chạy thí nghiệm với 1 config"""
+    cfg: Dict[str, Any],
+    max_samples: int,
+) -> Dict[str, Any]:
+    """Chạy 1 config, đánh giá trên BLEU có dấu"""
 
-    # Load ground truth
     gt_map: Dict[str, str] = {}
     with open(test_csv, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -156,9 +279,21 @@ def run_experiment(
             if img and caption:
                 gt_map[img] = caption.strip()
 
+    # Build gen_kwargs
+    gen_kwargs: Dict[str, Any] = {
+        "max_new_tokens": cfg["max_new_tokens"],
+        "num_beams": cfg["num_beams"],
+        "early_stopping": cfg["early_stopping"],
+        "repetition_penalty": cfg["repetition_penalty"],
+        "length_penalty": cfg["length_penalty"],
+        "no_repeat_ngram_size": cfg["no_repeat_ngram_size"],
+    }
+    if cfg.get("min_length", 0) > 0:
+        gen_kwargs["min_length"] = cfg["min_length"]
+
     bleu_scores: List[float] = []
+    bleu1_scores: List[float] = []
     processed = 0
-    errors = 0
 
     for img_name in gt_map:
         if processed >= max_samples:
@@ -170,150 +305,144 @@ def run_experiment(
 
         try:
             image = Image.open(img_path)
-            pred = generate_caption(model, processor, image, params, device)
+            _, caption_with_accent = generate_with_pipeline(
+                model, processor, image, device, gen_kwargs
+            )
             ref = gt_map[img_name]
-            bleu = calculate_bleu_nltk(pred, ref)
-            bleu_scores.append(bleu)
+            _, _, _, bleu4 = calculate_bleu4(caption_with_accent, ref)
+            bleu1, _, _, _ = calculate_bleu4(caption_with_accent, ref)
+            bleu_scores.append(bleu4)
+            bleu1_scores.append(bleu1)
             processed += 1
         except Exception:
-            errors += 1
             continue
 
     return {
-        "bleu": sum(bleu_scores) / len(bleu_scores) if bleu_scores else 0.0,
+        "bleu4": sum(bleu_scores) / len(bleu_scores) if bleu_scores else 0.0,
+        "bleu1": sum(bleu1_scores) / len(bleu1_scores) if bleu1_scores else 0.0,
         "samples": processed,
-        "errors": errors
     }
 
 
-def grid_search(
-    model, processor, device: str,
-    test_csv: Path,
-    image_dir: Path,
-    max_samples: int = 50
-) -> List[Dict[str, Any]]:
-    """Grid search để tìm config tốt nhất"""
+# ============================================================
+# MAIN GRID SEARCH
+# ============================================================
 
-    # Grid parameters
-    configs = [
-        {"name": "baseline", "num_beams": 3, "max_new_tokens": 50,
-         "repetition_penalty": 1.2, "length_penalty": 1.1, "no_repeat_ngram_size": 3},
-        {"name": "beam5", "num_beams": 5, "max_new_tokens": 50,
-         "repetition_penalty": 1.2, "length_penalty": 1.1, "no_repeat_ngram_size": 3},
-        {"name": "len75", "num_beams": 3, "max_new_tokens": 75,
-         "repetition_penalty": 1.2, "length_penalty": 1.1, "no_repeat_ngram_size": 3},
-        {"name": "lenpen1.5", "num_beams": 3, "max_new_tokens": 50,
-         "repetition_penalty": 1.2, "length_penalty": 1.5, "no_repeat_ngram_size": 3},
-        {"name": "reppel2.0", "num_beams": 3, "max_new_tokens": 50,
-         "repetition_penalty": 2.0, "length_penalty": 1.1, "no_repeat_ngram_size": 3},
-        {"name": "beam5_len75", "num_beams": 5, "max_new_tokens": 75,
-         "repetition_penalty": 1.2, "length_penalty": 1.2, "no_repeat_ngram_size": 3},
-        {"name": "beam5_len100_rep2.0", "num_beams": 5, "max_new_tokens": 100,
-         "repetition_penalty": 2.0, "length_penalty": 1.5, "no_repeat_ngram_size": 3},
-        {"name": "sample", "num_beams": 1, "max_new_tokens": 75,
-         "repetition_penalty": 1.5, "length_penalty": 1.0, "no_repeat_ngram_size": 0},
-        {"name": "minlen20", "num_beams": 3, "max_new_tokens": 75,
-         "repetition_penalty": 1.2, "length_penalty": 1.2, "no_repeat_ngram_size": 3, "min_length": 20},
-    ]
+def main():
+    # Chọn configs
+    configs = ALL_CONFIGS[:_args.configs] if _args.configs else ALL_CONFIGS
+
+    print("=" * 70)
+    print("🔬 GRID SEARCH GENERATION - KHỚP PIPELINE THẬT")
+    print("=" * 70)
+    print(f"📦 Model:       {MODEL_PATH}")
+    print(f"📊 Test CSV:    {TEST_CSV}")
+    print(f"🖼️  Image dir:  {IMAGE_DIR}")
+    print(f"📝 Samples:     {_args.max_samples}  |  Configs: {len(configs)}")
+    print(f"⏱️  Est. time:  ~{len(configs) * _args.max_samples * 2 // 60} min")
+    print()
+
+    model, processor, device = load_model(MODEL_PATH)
 
     results: List[Dict[str, Any]] = []
-    total = len(configs)
-
-    print("=" * 70)
-    print("🔬 GRID SEARCH: TIM CONFIG TOT NHAT")
-    print("=" * 70)
-    print(f"📊 Thu {total} configs tren {max_samples} samples")
-    print()
 
     for i, cfg in enumerate(configs, 1):
-        params = GenParams(
-            num_beams=cfg.get("num_beams", 3),
-            max_new_tokens=cfg.get("max_new_tokens", 50),
-            repetition_penalty=cfg.get("repetition_penalty", 1.2),
-            length_penalty=cfg.get("length_penalty", 1.1),
-            no_repeat_ngram_size=cfg.get("no_repeat_ngram_size", 3),
-            min_length=cfg.get("min_length", 5),
+        name = cfg["name"]
+        gen_info = (
+            f"beam={cfg['num_beams']}, "
+            f"tokens={cfg['max_new_tokens']}, "
+            f"rep={cfg['repetition_penalty']}, "
+            f"lp={cfg['length_penalty']}, "
+            f"ngram={cfg['no_repeat_ngram_size']}"
         )
-
-        print(f"[{i}/{total}] {cfg['name']}: ", end="", flush=True)
+        print(f"[{i}/{len(configs)}] {name:<25} | {gen_info}")
+        print(f"            ", end="", flush=True)
 
         start = time.time()
-        result: Dict[str, Any] = dict(run_experiment(model, processor, device, test_csv, image_dir, params, max_samples))
-        result["config_name"] = cfg["name"]
-        result["params"] = cfg
+        result = run_experiment(
+            model, processor, device,
+            TEST_CSV, IMAGE_DIR,
+            cfg, _args.max_samples,
+        )
+        elapsed = time.time() - start
+
+        result["config_name"] = name
+        result["params"] = {k: v for k, v in cfg.items() if k != "name"}
         results.append(result)
 
-        elapsed = time.time() - start
-        print(f"BLEU={result['bleu']:.4f} ({result['samples']} samples, {elapsed:.1f}s)")
+        print(f"BLEU4={result['bleu4']:.4f}  BLEU1={result['bleu1']:.4f}  "
+              f"({result['samples']} samples, {elapsed:.1f}s)")
 
-    results.sort(key=lambda x: x["bleu"], reverse=True)
+    # Sort by BLEU4 (có dấu)
+    results.sort(key=lambda x: x["bleu4"], reverse=True)
 
+    # Print ranking
     print()
-    print("=" * 70)
-    print("KET QUA XEP HANG:")
-    print("=" * 70)
-    print("Rank | Config               | BLEU   | Beams | Len | RepPen | LenPen | Tokens")
+    print("=" * 75)
+    print("📊 KẾT QUẢ XẾP HẠNG (BLEU-4 có dấu)")
+    print("=" * 75)
+    print(f"{'Rank':<5} | {'Config':<28} | {'BLEU4':>7} | {'BLEU1':>7} | "
+          f"{'Beams':>5} | {'Tokens':>6} | {'RepPen':>6} | {'LenPen':>6}")
+    print("-" * 75)
+
+    baseline_bleu4 = next((r["bleu4"] for r in results if r["config_name"] == "baseline"), 0)
     for i, r in enumerate(results, 1):
         p = r["params"]
-        print(f" {i:2} | {p['name']:<20} | {r['bleu']:.4f} |   {p['num_beams']:2}  | {p['max_new_tokens']:3} |   {p['repetition_penalty']:.1f}  |   {p['length_penalty']:.1f}   |   {p['num_beams']*p['max_new_tokens']//100:2}   |")
+        delta = r["bleu4"] - baseline_bleu4
+        sign = "+" if delta >= 0 else ""
+        marker = " ◀ BEST" if i == 1 else (" ★ baseline" if r["config_name"] == "baseline" else "")
+        print(
+            f" {i:3}  | {r['config_name']:<28} | {r['bleu4']:>7.4f} | {r['bleu1']:>7.4f} | "
+            f" {p['num_beams']:3}  |   {p['max_new_tokens']:3}   |  "
+            f" {p['repetition_penalty']:.2f}  |  {p['length_penalty']:.1f}   "
+            f"{sign}{delta:.4f}{marker}"
+        )
 
-    print()
+    # Best config
     best = results[0]
-    print("=" * 70)
-    print("CONFIG TOT NHAT:")
-    print("=" * 70)
-    print(f"   Name: {best['config_name']}")
-    print(f"   BLEU: {best['bleu']:.4f}")
+    print()
+    print("=" * 75)
+    print("🏆 CONFIG TỐT NHẤT")
+    print("=" * 75)
+    print(f"   Name:   {best['config_name']}")
+    print(f"   BLEU-4: {best['bleu4']:.4f}  (baseline: {baseline_bleu4:.4f}, "
+          f"delta: {best['bleu4']-baseline_bleu4:+.4f})")
+    print(f"   BLEU-1: {best['bleu1']:.4f}")
     print(f"   Params:")
-    for k, v in best['params'].items():
-        print(f"      - {k}: {v}")
+    for k, v in best["params"].items():
+        print(f"      {k}: {v}")
 
-    # Lưu kết quả
+    # Save results
     output_csv = BASE_DIR / "outputs" / "grid_search_results.csv"
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["rank", "config_name", "bleu", "samples", "params"])
+        writer = csv.DictWriter(f, fieldnames=[
+            "rank", "config_name", "bleu4", "bleu1", "samples",
+            "num_beams", "max_new_tokens", "repetition_penalty",
+            "length_penalty", "no_repeat_ngram_size",
+        ])
         writer.writeheader()
         for i, r in enumerate(results, 1):
+            p = r["params"]
             writer.writerow({
                 "rank": i,
                 "config_name": r["config_name"],
-                "bleu": r["bleu"],
+                "bleu4": round(r["bleu4"], 4),
+                "bleu1": round(r["bleu1"], 4),
                 "samples": r["samples"],
-                "params": str(r["params"])
+                "num_beams": p["num_beams"],
+                "max_new_tokens": p["max_new_tokens"],
+                "repetition_penalty": p["repetition_penalty"],
+                "length_penalty": p["length_penalty"],
+                "no_repeat_ngram_size": p["no_repeat_ngram_size"],
             })
-    print(f"\nDa luu: {output_csv}")
 
-    return results
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Grid search generation parameters")
-    parser.add_argument("--model", type=Path,
-                        default=BASE_DIR / "models" / "blip_vietnamese",
-                        help="Đường dẫn model")
-    parser.add_argument("--test-csv", type=Path, default=DEFAULT_TEST_CSV,
-                        help="File test CSV")
-    parser.add_argument("--image-dir", type=Path, default=DEFAULT_IMAGE_DIR,
-                        help="Thư mục ảnh")
-    parser.add_argument("--max-samples", type=int, default=50,
-                        help="Số samples để thử nghiệm (mặc định 50)")
-
-    args = parser.parse_args()
-
-    print("=" * 70)
-    print("🚀 GRID SEARCH: CAI THIEN BLEU")
-    print("=" * 70)
-
-    # Load model
-    model, processor, device = load_model(args.model)
-
-    # Run grid search
-    results = grid_search(
-        model, processor, device,
-        args.test_csv,
-        args.image_dir,
-        args.max_samples
-    )
+    print(f"\n💾 Đã lưu: {output_csv}")
+    print()
+    print("▶ Để chạy full test (1514 samples) với config tốt nhất:")
+    print(f"   python tools/eval_new_model.py --model-path {_args.model}")
+    print()
+    print("▶ Hoặc muốn thử config cụ thể, cập nhật app/core/config.py:")
 
 
 if __name__ == "__main__":

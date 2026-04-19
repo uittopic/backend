@@ -1,4 +1,6 @@
+# ============================================================
 # Python
+# ============================================================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -20,47 +22,82 @@ wheels/
 .installed.cfg
 *.egg
 
+# ============================================================
 # Virtual Environment
+# ============================================================
 venv/
 env/
 ENV/
-.venv
+.venv/
 
+# ============================================================
 # IDE
+# ============================================================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Model files (có thể rất lớn)
-models/
-*.bin
-*.pt
-*.pth
-*.ckpt
+# ============================================================
+# Model files (LƯU Ý: models/ có trong repo)
+# — Nếu model quá lớn, có thể dùng Git LFS:
+#   git lfs track "models/**/*.safetensors"
+#   git lfs track "models/**/*.bin"
+# ============================================================
+models/blip_vietnamese_80_20/
+models/blip_vietnamese_cleaned_v1/
+models/accent_restoration/
 
+# Model artifacts (nếu train lại)
+models/**/*.pt
+models/**/*.pth
+models/**/*.ckpt
+
+# ============================================================
 # Logs
+# ============================================================
 logs/
 *.log
 
-# Outputs (test results, predictions)
+# ============================================================
+# Outputs (test results, predictions — không cần commit)
+# ============================================================
 outputs/
 *.csv
+*.json
+*.png
 
-# Data (nếu không muốn commit)
-# data/images/
-# data/*.csv
+# ============================================================
+# Data (DƯỚI 100MB/file thì commit vào data/)
+# — Nếu data/images/ quá lớn, dùng Git LFS:
+#   git lfs track "data/images/**/*"
+# ============================================================
+data/images/
+data/*.csv
 
+# ============================================================
 # OS
+# ============================================================
 .DS_Store
 Thumbs.db
 
+# ============================================================
 # Jupyter
+# ============================================================
 .ipynb_checkpoints/
 *.ipynb
 
-# Environment variables
+# ============================================================
+# Environment variables — KHÔNG BAO GIỜ commit .env
+# ============================================================
 .env
 .env.local
+.env.*.local
 
+# ============================================================
+# Temporary / cache
+# ============================================================
+/tmp/
+.mplconfig/
+.cache/

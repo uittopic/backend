@@ -74,7 +74,7 @@ import sys
 sys.path.insert(0, str(BASE_DIR))
 from app.core.config import (
     MAX_NEW_TOKENS, NUM_BEAMS, EARLY_STOPPING,
-    NO_REPEAT_NGRAM_SIZE, REPETITION_PENALTY,
+    NO_REPEAT_NGRAM_SIZE, REPETITION_PENALTY, LENGTH_PENALTY,
     get_device, synchronize_device, clear_device_cache,
 )
 from app.core.accent_restoration_loader import restore_accent
@@ -111,7 +111,7 @@ def get_generation_kwargs() -> Dict[str, Any]:
         "num_beams": NUM_BEAMS,
         "early_stopping": EARLY_STOPPING,
         "repetition_penalty": REPETITION_PENALTY,
-        "length_penalty": 1.1,
+        "length_penalty": LENGTH_PENALTY,
     }
     if NO_REPEAT_NGRAM_SIZE > 0:
         kwargs["no_repeat_ngram_size"] = NO_REPEAT_NGRAM_SIZE

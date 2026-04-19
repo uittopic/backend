@@ -43,13 +43,23 @@ API_VERSION = os.getenv("API_VERSION", "1.0.0")
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "8000"))
 
+# ============================================
+# H1: INFERENCE — CẢI TIẾN GENERATION PARAMS
+# Đây là cách NHANH NHẤT để boost metrics KHÔNG cần train lại
+# ============================================
+
 # Generation Configuration
-MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "60"))  # Tăng từ 50 → 60 để sinh caption dài hơn, nhiều keyword
-NUM_BEAMS = int(os.getenv("NUM_BEAMS", "3"))  # Giảm từ 5 → 3: beam cao = câu generic, beam thấp = câu cụ thể hơn
+MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "128"))      # 60 → 128 (tăng gấp đôi)
+NUM_BEAMS = int(os.getenv("NUM_BEAMS", "5"))                   # 3 → 5 (beam search rộng hơn)
 EARLY_STOPPING = os.getenv("EARLY_STOPPING", "true").lower() == "true"
 NO_REPEAT_NGRAM_SIZE = int(os.getenv("NO_REPEAT_NGRAM_SIZE", "3"))
-REPETITION_PENALTY = float(os.getenv("REPETITION_PENALTY", "1.05"))  # Giảm từ 1.2 → 1.05: model dám generate thêm keyword
+REPETITION_PENALTY = float(os.getenv("REPETITION_PENALTY", "1.1"))  # 1.05 → 1.1 (giảm lặp)
+LENGTH_PENALTY = float(os.getenv("LENGTH_PENALTY", "1.2"))          # 1.1 → 1.2 (ưu tiên câu dài)
 MAX_IMAGE_SIZE = int(os.getenv("MAX_IMAGE_SIZE", "512"))
+# THÊM MỚI
+TOP_K = int(os.getenv("TOP_K", "50"))            # Top-k sampling (0 = disable)
+TOP_P = float(os.getenv("TOP_P", "0.95"))        # Nucleus sampling
+DO_SAMPLE = os.getenv("DO_SAMPLE", "false").lower() == "true"  # Mặc định greedy để ổn định
 
 # Logging Configuration
 LOG_DIR = BASE_DIR / os.getenv("LOG_DIR", "logs")

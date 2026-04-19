@@ -24,6 +24,10 @@ from app.core.config import (
     NUM_BEAMS,
     REPETITION_PENALTY,
     EARLY_STOPPING,
+    LENGTH_PENALTY,
+    TOP_K,
+    TOP_P,
+    DO_SAMPLE,
     clear_device_cache,
     get_device,
     synchronize_device,
@@ -47,7 +51,10 @@ GENERATION_KWARGS: Dict[str, object] = {
     "num_beams": NUM_BEAMS,
     "early_stopping": EARLY_STOPPING,
     "repetition_penalty": REPETITION_PENALTY,
-    "length_penalty": 1.1,
+    "length_penalty": LENGTH_PENALTY,
+    "top_k": TOP_K if TOP_K > 0 else None,
+    "top_p": TOP_P if TOP_K > 0 else None,
+    "do_sample": DO_SAMPLE,
 }
 if NO_REPEAT_NGRAM_SIZE > 0:
     GENERATION_KWARGS["no_repeat_ngram_size"] = NO_REPEAT_NGRAM_SIZE

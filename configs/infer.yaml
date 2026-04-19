@@ -1,17 +1,30 @@
-# Cấu hình suy luận (mẫu)
-#
+# Cấu hình suy luận — CẢI TIẾN
+# ===========================================
+# Các thay đổi so với baseline:
+#   MAX_NEW_TOKENS: 60 → 128 (caption dài hơn, đầy đủ hơn)
+#   NUM_BEAMS: 3 → 5 (beam search rộng hơn, chất lượng cao hơn)
+#   REPETITION_PENALTY: 1.05 → 1.1 (giảm lặp từ)
+#   LENGTH_PENALTY: 1.1 → 1.2 (ưu tiên câu dài hơn, BLEU cao hơn)
+#   TOP_K: 50 (top-k sampling để đa dạng hơn)
+# ===========================================
+
 model:
   # Khuyến nghị: dùng model_id trên HuggingFace Hub hoặc đường dẫn local
   model_id: "viet-user/blip-captioning-vi-v1"  # thay bằng model bạn upload
   local_fallback_path: "models/blip_vietnamese"
 
 generation:
-  max_new_tokens: 50
-  num_beams: 3
+  max_new_tokens: 128          # 60 → 128: caption đầy đủ hơn
+  num_beams: 5                 # 3 → 5: beam search rộng hơn, chất lượng cao hơn
   early_stopping: true
+  repetition_penalty: 1.1       # 1.05 → 1.1: giảm từ lặp
+  length_penalty: 1.2          # 1.1 → 1.2: ưu tiên câu dài (BLEU cao hơn)
+  no_repeat_ngram_size: 3      # không lặp 3-gram
+  # THÊM MỚI
+  top_k: 50                    # top-k sampling (0 = disable)
+  top_p: 0.95                  # nucleus sampling
+  do_sample: false             # true = sampling, false = greedy (mặc định: greedy ổn định)
 
 api:
   host: "0.0.0.0"
   port: 8000
-
-
