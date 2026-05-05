@@ -15,14 +15,25 @@ Cách dùng:
 """
 import argparse
 import csv
+import json
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import torch
 from PIL import Image
 from tqdm import tqdm
+from rouge_score import rouge_scorer
+from nltk.translate.meteor_score import meteor_score
+import nltk
+
+# Download NLTK data nếu chưa có
+for resource in ["wordnet", "punkt", "averaged_perceptron_tagger"]:
+    try:
+        nltk.data.find(f"corpora/{resource}")
+    except LookupError:
+        nltk.download(resource, quiet=True)
 
 # === CONFIG ===
 BASE_DIR = Path(__file__).parent.parent
@@ -54,6 +65,12 @@ parser.add_argument(
     "--summary",
     default=None,
     help="File JSON summary. Mặc định: outputs/full_eval/evaluation_summary.json",
+)
+parser.add_argument(
+    "--limit",
+    type=int,
+    default=None,
+    help="Giới hạn số mẫu test (mặc định: full test set)",
 )
 _args = parser.parse_args()
 
@@ -228,31 +245,91 @@ def normalize_text(text: str) -> str:
     return text
 
 
-def calculate_bleu(pred: str, ref: str) -> Tuple[float, float, float, float, float]:
-    """Calculate BLEU-1,2,3,4 scores"""
-    try:
-        from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+# ROUGE scorer — word-level regex \w+
+_rouge_scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)
 
-        pred_tokens = normalize_text(pred).split()
-        ref_tokens = normalize_text(ref).split()
+
+def calculate_rouge_l(pred: str, ref: str) -> float:
+    """Calculate ROUGE-L (LCS-based longest common subsequence overlap)"""
+    try:
+        score = _rouge_scorer.score(ref, pred)
+        return float(score["rougeL"].fmeasure)
+    except Exception:
+        return 0.0
+
+
+def calculate_meteor(pred: str, ref: str) -> float:
+    """Calculate METEOR score using NLTK meteor_metric"""
+    try:
+        # Tokenize word-level giống BLEU: \w+
+        pred_tokens = re.findall(r'\w+', pred.lower())
+        ref_tokens = re.findall(r'\w+', ref.lower())
+        if not pred_tokens or not ref_tokens:
+            return 0.0
+        # meteor_score expects list of reference token lists
+        score = meteor_score([ref_tokens], pred_tokens)
+        return float(score)
+    except Exception:
+        return 0.0
+
+
+def calculate_bleu(pred: str, ref: str) -> Tuple[float, float, float, float, float]:
+    """Calculate BLEU-1,2,3,4 scores — word-level tokenization giống full_batch_test.py"""
+    try:
+        import math
+        from collections import Counter
+
+        # Word-level tokenization giống full_batch_test.py
+        def tokenize(text):
+            import re
+            return re.findall(r'\w+', text.lower())
+
+        def get_ngrams(tokens, n):
+            return Counter(tuple(tokens[i:i+n]) for i in range(len(tokens) - n + 1))
+
+        pred_tokens = tokenize(pred)
+        ref_tokens = tokenize(ref)
 
         if not pred_tokens or not ref_tokens:
             return (0.0, 0.0, 0.0, 0.0, 0.0)
 
-        smoothing = SmoothingFunction().method1  # type: ignore
+        def bleu_n(ref_toks, hyp_toks, n):
+            if n > len(ref_toks) or n > len(hyp_toks):
+                return 0.0
+            hyp_ng = get_ngrams(hyp_toks, n)
+            ref_ng = get_ngrams(ref_toks, n)
+            if not hyp_ng:
+                return 0.0
+            matches = sum(min(hyp_ng[ng], max(ref_ng.get(ng, 0), 0)) for ng in hyp_ng)
+            total = sum(hyp_ng.values())
+            precision = matches / total if total > 0 else 0.0
+            log_p = math.log(precision) if precision > 0 else float('-inf')
+            avg_log_p = log_p / n
+            bp = 1.0 if len(hyp_toks) >= len(ref_toks) else math.exp(1 - len(ref_toks) / len(hyp_toks)) if len(hyp_toks) > 0 else 0.0
+            return max(0.0, min(1.0, bp * math.exp(avg_log_p)))
 
-        w1 = (1.0, 0.0, 0.0, 0.0)
-        w2 = (0.5, 0.5, 0.0, 0.0)
-        w3 = (0.33, 0.33, 0.34, 0.0)
-        w4 = (0.25, 0.25, 0.25, 0.25)
+        bleu1 = bleu_n(ref_tokens, pred_tokens, 1)
+        bleu2 = bleu_n(ref_tokens, pred_tokens, 2)
+        bleu3 = bleu_n(ref_tokens, pred_tokens, 3)
+        bleu4 = bleu_n(ref_tokens, pred_tokens, 4)
 
-        bleu1 = sentence_bleu([ref_tokens], pred_tokens, weights=w1, smoothing_function=smoothing)  # type: ignore[reportArgumentType]
-        bleu2 = sentence_bleu([ref_tokens], pred_tokens, weights=w2, smoothing_function=smoothing)  # type: ignore[reportArgumentType]
-        bleu3 = sentence_bleu([ref_tokens], pred_tokens, weights=w3, smoothing_function=smoothing)  # type: ignore[reportArgumentType]
-        bleu4 = sentence_bleu([ref_tokens], pred_tokens, weights=w4, smoothing_function=smoothing)  # type: ignore[reportArgumentType]
-        bleu = sentence_bleu([ref_tokens], pred_tokens, smoothing_function=smoothing)  # type: ignore[reportArgumentType]
+        # BLEU tổng (n=4)
+        log_precisions = []
+        for n in range(1, 5):
+            if n > len(ref_tokens) or n > len(pred_tokens):
+                log_precisions.append(float('-inf'))
+            else:
+                hyp_ng = get_ngrams(pred_tokens, n)
+                ref_ng = get_ngrams(ref_tokens, n)
+                matches = sum(min(hyp_ng[ng], max(ref_ng.get(ng, 0), 0)) for ng in hyp_ng)
+                total = sum(hyp_ng.values())
+                precision = matches / total if total > 0 else 0.0
+                log_precisions.append(math.log(precision) if precision > 0 else float('-inf'))
+        avg_log_p = sum(log_precisions) / 4
+        bp = 1.0 if len(pred_tokens) >= len(ref_tokens) else math.exp(1 - len(ref_tokens) / len(pred_tokens)) if len(pred_tokens) > 0 else 0.0
+        bleu = max(0.0, min(1.0, bp * math.exp(avg_log_p)))
 
-        return (float(bleu1), float(bleu2), float(bleu3), float(bleu4), float(bleu))  # type: ignore[arg-type]
+        return (float(bleu1), float(bleu2), float(bleu3), float(bleu4), float(bleu))
     except Exception:
         return (0.0, 0.0, 0.0, 0.0, 0.0)
 
@@ -295,13 +372,22 @@ def main():
     results: list = []
     bleu_no_accent: Dict[str, list] = {"bleu1": [], "bleu2": [], "bleu3": [], "bleu4": [], "bleu": []}
     bleu_with_accent: Dict[str, list] = {"bleu1": [], "bleu2": [], "bleu3": [], "bleu4": [], "bleu": []}
+    rouge_l_no_accent: List[float] = []
+    rouge_l_with_accent: List[float] = []
+    meteor_no_accent: List[float] = []
+    meteor_with_accent: List[float] = []
     all_words_no_accent: list = []
     all_words_with_accent: list = []
 
     start_time = time.time()
     total_samples = len(gt_map)
 
-    for i, (img_name, gt) in enumerate(gt_map.items(), 1):
+    images_to_process = list(gt_map.items())
+    if _args.limit:
+        images_to_process = images_to_process[:_args.limit]
+        total_samples = len(images_to_process)
+
+    for i, (img_name, gt) in enumerate(images_to_process, 1):
         if i % 50 == 0 or i == 1:
             elapsed = time.time() - start_time
             avg_bleu = sum(bleu_no_accent["bleu"]) / len(bleu_no_accent["bleu"]) if bleu_no_accent["bleu"] else 0
@@ -322,9 +408,20 @@ def main():
             scores_no_accent = calculate_bleu(caption_no_accent, gt)
             scores_with_accent = calculate_bleu(caption_with_accent, gt)
 
+            # Tính ROUGE-L và METEOR cho cả 2 version
+            rouge_l_no = calculate_rouge_l(caption_no_accent, gt)
+            rouge_l_with = calculate_rouge_l(caption_with_accent, gt)
+            meteor_no = calculate_meteor(caption_no_accent, gt)
+            meteor_with = calculate_meteor(caption_with_accent, gt)
+
             for j, key in enumerate(["bleu1", "bleu2", "bleu3", "bleu4", "bleu"]):
                 bleu_no_accent[key].append(scores_no_accent[j])
                 bleu_with_accent[key].append(scores_with_accent[j])
+
+            rouge_l_no_accent.append(rouge_l_no)
+            rouge_l_with_accent.append(rouge_l_with)
+            meteor_no_accent.append(meteor_no)
+            meteor_with_accent.append(meteor_with)
 
             all_words_no_accent.extend(caption_no_accent.split())
             all_words_with_accent.extend(caption_with_accent.split())
@@ -344,6 +441,10 @@ def main():
                 "bleu4_with_accent": scores_with_accent[3],
                 "bleu_no_accent": scores_no_accent[4],
                 "bleu_with_accent": scores_with_accent[4],
+                "rouge_l_no_accent": rouge_l_no,
+                "rouge_l_with_accent": rouge_l_with,
+                "meteor_no_accent": meteor_no,
+                "meteor_with_accent": meteor_with,
             })
 
             clear_device_cache()
@@ -359,21 +460,29 @@ def main():
         "with_accent": {k: sum(v) / n for k, v in bleu_with_accent.items()},
     }
 
+    avg_rouge_l_no = sum(rouge_l_no_accent) / n if n > 0 else 0.0
+    avg_rouge_l_with = sum(rouge_l_with_accent) / n if n > 0 else 0.0
+    avg_meteor_no = sum(meteor_no_accent) / n if n > 0 else 0.0
+    avg_meteor_with = sum(meteor_with_accent) / n if n > 0 else 0.0
+
     avg_len_no_accent = len(all_words_no_accent) / n if n > 0 else 0
     avg_len_with_accent = len(all_words_with_accent) / n if n > 0 else 0
 
     # Lưu kết quả
     OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "image", "ground_truth",
+        "caption_no_accent", "caption_with_accent",
+        "bleu1_no_accent", "bleu1_with_accent",
+        "bleu2_no_accent", "bleu2_with_accent",
+        "bleu3_no_accent", "bleu3_with_accent",
+        "bleu4_no_accent", "bleu4_with_accent",
+        "bleu_no_accent", "bleu_with_accent",
+        "rouge_l_no_accent", "rouge_l_with_accent",
+        "meteor_no_accent", "meteor_with_accent",
+    ]
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            "image", "ground_truth",
-            "caption_no_accent", "caption_with_accent",
-            "bleu1_no_accent", "bleu1_with_accent",
-            "bleu2_no_accent", "bleu2_with_accent",
-            "bleu3_no_accent", "bleu3_with_accent",
-            "bleu4_no_accent", "bleu4_with_accent",
-            "bleu_no_accent", "bleu_with_accent",
-        ])
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(results)
 
@@ -384,18 +493,31 @@ def main():
         "model": str(MODEL_PATH),
         "test_samples": n,
         "pipeline": "BLIP → Accent Restoration",
+        "tokenization": "word-level regex \\w+",
+        "metrics_reported": ["BLEU-1", "BLEU-2", "BLEU-3", "BLEU-4", "ROUGE-L", "METEOR"],
         "bleu_scores": {
             "bleu1_no_accent": round(avg["no_accent"]["bleu1"], 4),
+            "bleu2_no_accent": round(avg["no_accent"]["bleu2"], 4),
+            "bleu3_no_accent": round(avg["no_accent"]["bleu3"], 4),
             "bleu4_no_accent": round(avg["no_accent"]["bleu4"], 4),
             "bleu1_with_accent": round(avg["with_accent"]["bleu1"], 4),
+            "bleu2_with_accent": round(avg["with_accent"]["bleu2"], 4),
+            "bleu3_with_accent": round(avg["with_accent"]["bleu3"], 4),
             "bleu4_with_accent": round(avg["with_accent"]["bleu4"], 4),
+        },
+        "rouge_l": {
+            "no_accent": round(avg_rouge_l_no, 4),
+            "with_accent": round(avg_rouge_l_with, 4),
+        },
+        "meteor": {
+            "no_accent": round(avg_meteor_no, 4),
+            "with_accent": round(avg_meteor_with, 4),
         },
         "caption_length": {
             "no_accent": round(avg_len_no_accent, 1),
             "with_accent": round(avg_len_with_accent, 1),
         },
     }
-    import json
     with open(SUMMARY_JSON, "w", encoding="utf-8") as f:
         json.dump(summary_data, f, ensure_ascii=False, indent=2)
 
@@ -406,27 +528,24 @@ def main():
     print("=" * 70)
     print("📊 KẾT QUẢ ĐÁNH GIÁ (KHỚP PIPELINE THẬT)")
     print("=" * 70)
-    print(f"Total samples: {n}")
-    print(f"Time: {elapsed/60:.1f}min ({elapsed/n:.1f}s/image)")
+    print(f"Total samples: {n}  |  Time: {elapsed/60:.1f}min ({elapsed/n:.1f}s/img)")
+    print(f"Tokenization: word-level regex \\w+")
     print()
-    print("BLEU SCORES (không dấu):")
-    print(f"{'Metric':<10} | {'Value':<12}")
-    print("-" * 25)
-    for key in ["bleu1", "bleu2", "bleu3", "bleu4"]:
-        print(f"{key.upper():<10} | {avg['no_accent'][key]:>10.4f}")
-    print()
-    print("BLEU SCORES (có dấu - Accent Restoration):")
-    print(f"{'Metric':<10} | {'Value':<12}")
-    print("-" * 25)
-    for key in ["bleu1", "bleu2", "bleu3", "bleu4"]:
-        print(f"{key.upper():<10} | {avg['with_accent'][key]:>10.4f}")
+    print(f"{'':25} {'Không dấu':>15} {'Có dấu':>15}")
+    print("-" * 58)
+    print(f"{'BLEU-1':<25} {avg['no_accent']['bleu1']:>15.4f} {avg['with_accent']['bleu1']:>15.4f}")
+    print(f"{'BLEU-2':<25} {avg['no_accent']['bleu2']:>15.4f} {avg['with_accent']['bleu2']:>15.4f}")
+    print(f"{'BLEU-3':<25} {avg['no_accent']['bleu3']:>15.4f} {avg['with_accent']['bleu3']:>15.4f}")
+    print(f"{'BLEU-4':<25} {avg['no_accent']['bleu4']:>15.4f} {avg['with_accent']['bleu4']:>15.4f}")
+    print(f"{'ROUGE-L':<25} {avg_rouge_l_no:>15.4f} {avg_rouge_l_with:>15.4f}")
+    print(f"{'METEOR':<25} {avg_meteor_no:>15.4f} {avg_meteor_with:>15.4f}")
     print()
     print("CAPTION LENGTH:")
     print(f"  Không dấu: {avg_len_no_accent:.1f} words avg")
     print(f"  Có dấu:    {avg_len_with_accent:.1f} words avg")
     print()
-    print(f"💾 Kết quả chi tiết: {OUTPUT_CSV}")
-    print(f"📋 Summary JSON:       {SUMMARY_JSON}")
+    print(f"💾 CSV: {OUTPUT_CSV}")
+    print(f"📋 JSON: {SUMMARY_JSON}")
     print()
     print("=" * 70)
     print("SO SÁNH 2 MODEL:")

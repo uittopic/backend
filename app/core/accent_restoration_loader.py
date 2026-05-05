@@ -27,10 +27,13 @@ device = get_device()
 
 def load_tags_from_huggingface(model_name: str) -> Optional[list]:
     try:
+        import os
+        os.environ["HF_HUB_OFFLINE"] = "1"
         tags_file = hf_hub_download(
             repo_id=model_name,
             filename="selected_tags_names.txt",
-            cache_dir=None
+            cache_dir=None,
+            local_files_only=True,
         )
         with open(tags_file, 'r', encoding='utf-8') as f:
             labels = [line.strip() for line in f if line.strip()]
@@ -42,14 +45,22 @@ def load_tags_from_huggingface(model_name: str) -> Optional[list]:
         return None
 
 
-# Load tokenizer và model
+# Load tokenizer và model — dùng local cache, không cần kết nối HuggingFace
 try:
-    print(f"📥 Đang tải model từ HuggingFace: {ACCENT_MODEL_NAME}")
+    print(f"📥 Đang load Accent Restoration Model từ cache local: {ACCENT_MODEL_NAME}")
+    import os
+    os.environ["HF_HUB_OFFLINE"] = "1"  # Force offline, không thử kết nối HuggingFace
+
     accent_tokenizer = AutoTokenizer.from_pretrained(
         ACCENT_MODEL_NAME,
-        add_prefix_space=True
+        add_prefix_space=True,
+        local_files_only=True,
+        use_fast=False,
     )
-    accent_model = AutoModelForTokenClassification.from_pretrained(ACCENT_MODEL_NAME)
+    accent_model = AutoModelForTokenClassification.from_pretrained(
+        ACCENT_MODEL_NAME,
+        local_files_only=True,
+    )
 
     label_list = load_tags_from_huggingface(ACCENT_MODEL_NAME)
 

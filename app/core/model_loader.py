@@ -47,13 +47,15 @@ print(f"✅ BLIP model đã được load và chuyển sang {device}")
 print("📝 Model này tạo caption tiếng Việt KHÔNG DẤU")
 print("💡 Sử dụng /api/caption_full để có caption CÓ DẤU (qua Accent Restoration)")
 
-# Tối ưu: Compile model nếu PyTorch 2.0+ (tăng tốc inference)
+# Tối ưu: Compile model nếu PyTorch 2.0+ và có CUDA (tăng tốc inference)
+# Bỏ qua compile trên CPU/MPS vì gây crash
 try:
-    if hasattr(torch, 'compile') and device != "mps":
-        # torch.compile() chưa hỗ trợ tốt MPS, chỉ dùng cho CUDA/CPU
+    if hasattr(torch, 'compile') and device == "cuda":
         print("⚡ Đang compile model để tăng tốc inference...")
         blip_model = torch.compile(blip_model, mode="reduce-overhead")  # type: ignore
         print("✅ Model đã được compile")
+    else:
+        print(f"⏭️  Bỏ qua compile (device={device})")
 except Exception as e:
     # Nếu không compile được, vẫn dùng model bình thường
     pass
