@@ -1,0 +1,18 @@
+FINAL METRICS SNAPSHOT
+Date: 2026-05-07T23:55:57
+Model: models/blip_shopee_vicaps_v1_0_1_mps
+Test CSV: data/test_clean_v3_final_noleak_filtered.csv
+Samples: 300
+Eval mode: no-accent
+
+BLEU-1: 0.6508
+BLEU-2: 0.6253
+BLEU-3: 0.5927
+BLEU-4: 0.5621
+ROUGE-L: 0.6485
+
+Generation params:
+- max_length: 40
+- num_beams: 4
+- repetition_penalty: 1.2
+- no_repeat_ngram_size: 3
