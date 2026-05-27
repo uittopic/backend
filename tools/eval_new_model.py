@@ -21,12 +21,14 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from sentence_transformers import SentenceTransformer
 import torch
 from PIL import Image
 from tqdm import tqdm
 from rouge_score import rouge_scorer
 from nltk.translate.meteor_score import meteor_score
 import nltk
+import unicodedata
 
 # Download NLTK data nếu chưa có
 for resource in ["wordnet", "punkt", "averaged_perceptron_tagger"]:
@@ -42,14 +44,14 @@ BASE_DIR = Path(__file__).parent.parent
 parser = argparse.ArgumentParser(description="Eval script khớp pipeline production")
 parser.add_argument(
     "--model-path",
-    default="models/blip_vietnamese_cleaned_v1",
+    default="models/blip_shopee_vicaps_v1_0_1_mps",
     help="Đường dẫn model (relative to BASE_DIR, hoặc absolute). "
-         "VD: models/blip_vietnamese_cleaned_v1  hoặc  models/blip_vietnamese_80_20",
+         "VD: models/blip_shopee_vicaps_v1_0_1_mps  hoặc  models/blip_vietnamese_80_20",
 )
 parser.add_argument(
     "--test-csv",
-    default="data/test_20.csv",
-    help="Đường dẫn file test CSV (relative to BASE_DIR). Default: data/test_20.csv",
+    default="data/test_clean_v3_final_noleak_filtered.csv",
+    help="Đường dẫn file test CSV (relative to BASE_DIR). Default: data/test_clean_v3_final_noleak_filtered.csv",
 )
 parser.add_argument(
     "--images-dir",
@@ -71,6 +73,12 @@ parser.add_argument(
     type=int,
     default=None,
     help="Giới hạn số mẫu test (mặc định: full test set)",
+)
+parser.add_argument(
+    "--folder-mode",
+    action="store_true",
+    help="Chạy trên tất cả ảnh trong thư mục, không cần ground truth. "
+         "Chỉ sinh caption, không tính BLEU/ROUGE/METEOR.",
 )
 _args = parser.parse_args()
 
@@ -335,6 +343,67 @@ def calculate_bleu(pred: str, ref: str) -> Tuple[float, float, float, float, flo
 
 
 # ============================================================
+# FOLDER MODE — run on all images without ground truth
+# ============================================================
+
+def _run_folder_mode(model, processor, device):
+    """Run model inference on all images in IMAGE_DIR, save captions only."""
+    print("📁 FOLDER MODE — không cần ground truth, chỉ sinh caption")
+    print()
+
+    import os
+    image_files = sorted([
+        f for f in os.listdir(IMAGE_DIR)
+        if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+    ])
+    total = len(image_files)
+    print(f"🖼️  Tìm thấy {total} ảnh trong {IMAGE_DIR}")
+    print()
+
+    OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = ["image", "caption_no_accent", "caption_with_accent"]
+    results = []
+
+    start_time = time.time()
+    for i, img_name in enumerate(image_files, 1):
+        if i % 100 == 0 or i == 1:
+            elapsed = time.time() - start_time
+            eta = (elapsed / i) * (total - i) if i > 0 else 0
+            print(f"   [{i}/{total}] | ETA: {eta/60:.1f}min")
+
+        img_path = IMAGE_DIR / img_name
+        if not img_path.exists():
+            continue
+
+        try:
+            image = Image.open(img_path)
+            caption_no_accent, caption_with_accent = generate_with_pipeline(
+                model, processor, image, device
+            )
+            results.append({
+                "image": img_name,
+                "caption_no_accent": caption_no_accent,
+                "caption_with_accent": caption_with_accent,
+            })
+            clear_device_cache()
+        except Exception as e:
+            print(f"⚠️ Error on {img_name}: {e}")
+            continue
+
+    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results)
+
+    elapsed = time.time() - start_time
+    print()
+    print(f"✅ Hoàn thành! {len(results)}/{total} ảnh")
+    print(f"⏱️  Thời gian: {elapsed/60:.1f} phút")
+    print(f"💾 CSV: {OUTPUT_CSV}")
+    print(f"📋 Note: Không có BLEU/ROUGE/METEOR vì không có ground truth")
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -356,28 +425,49 @@ def main():
     # Load model
     model, processor, device = load_blip_model(MODEL_PATH)
 
-    # Load ground truth
+    if _args.folder_mode:
+        _run_folder_mode(model, processor, device)
+        return
+
+    # Load ground truth — auto-detect delimiter + caption column
     gt_map: Dict[str, str] = {}
-    with open(TEST_CSV, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
+    with open(TEST_CSV, "r", encoding="utf-8-sig") as f:
+        header = f.readline()
+        delimiter = ";" if ";" in header else ","
+        f.seek(0)
+        reader = csv.DictReader(f, delimiter=delimiter)
         for row in reader:
             img = row.get("image", "").strip()
-            caption = row.get("caption_vi") or row.get("caption") or ""
+            caption = (
+                row.get("caption_vi_clean")
+                or row.get("caption_vi")
+                or row.get("caption")
+                or ""
+            ).strip()
             if img and caption:
-                gt_map[img] = caption.strip()
+                gt_map[img] = caption
 
-    print(f"📊 Ground truth: {len(gt_map)} samples")
+    print(f"📊 Ground truth: {len(gt_map)} samples (delimiter='{delimiter}')")
 
     # Evaluate
     results: list = []
-    bleu_no_accent: Dict[str, list] = {"bleu1": [], "bleu2": [], "bleu3": [], "bleu4": [], "bleu": []}
-    bleu_with_accent: Dict[str, list] = {"bleu1": [], "bleu2": [], "bleu3": [], "bleu4": [], "bleu": []}
-    rouge_l_no_accent: List[float] = []
-    rouge_l_with_accent: List[float] = []
-    meteor_no_accent: List[float] = []
-    meteor_with_accent: List[float] = []
+    bleu_semantic: Dict[str, list] = {"bleu1": [], "bleu2": [], "bleu3": [], "bleu4": [], "bleu": []}
+    bleu_accented: Dict[str, list] = {"bleu1": [], "bleu2": [], "bleu3": [], "bleu4": [], "bleu": []}
+    rouge_l_semantic_list: List[float] = []
+    rouge_l_accented_list: List[float] = []
+    meteor_semantic_list: List[float] = []
+    meteor_accented_list: List[float] = []
     all_words_no_accent: list = []
     all_words_with_accent: list = []
+
+    # Normalize ground truth sang no-accent để so sánh công bằng
+    # GT dùng Shopee-style accents; prediction dùng VNCOMMON style
+    # → so với no-accent GT để đo semantic chứ không đo accent style
+    def strip_accents(s):
+        s = unicodedata.normalize("NFD", s)
+        return "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+
+    gt_no_accent_map = {img: strip_accents(cap) for img, cap in gt_map.items()}
 
     start_time = time.time()
     total_samples = len(gt_map)
@@ -390,7 +480,7 @@ def main():
     for i, (img_name, gt) in enumerate(images_to_process, 1):
         if i % 50 == 0 or i == 1:
             elapsed = time.time() - start_time
-            avg_bleu = sum(bleu_no_accent["bleu"]) / len(bleu_no_accent["bleu"]) if bleu_no_accent["bleu"] else 0
+            avg_bleu = sum(bleu_semantic["bleu"]) / len(bleu_semantic["bleu"]) if bleu_semantic["bleu"] else 0
             eta = (elapsed / i) * (total_samples - i) if i > 0 else 0
             print(f"   [{i}/{total_samples}] BLEU: {avg_bleu:.4f} | ETA: {eta/60:.1f}min")
 
@@ -404,47 +494,54 @@ def main():
                 model, processor, image, device
             )
 
-            # Tính BLEU cho cả 2 version
-            scores_no_accent = calculate_bleu(caption_no_accent, gt)
-            scores_with_accent = calculate_bleu(caption_with_accent, gt)
+            # Semantic no-accent: strip accent from pred + strip accent from ref
+            # → đo semantic understanding của model, không bị ảnh hưởng bởi dấu tiếng Việt
+            gt_na = gt_no_accent_map[img_name]
+            scores_semantic = calculate_bleu(caption_no_accent, gt_na)
 
-            # Tính ROUGE-L và METEOR cho cả 2 version
-            rouge_l_no = calculate_rouge_l(caption_no_accent, gt)
-            rouge_l_with = calculate_rouge_l(caption_with_accent, gt)
-            meteor_no = calculate_meteor(caption_no_accent, gt)
-            meteor_with = calculate_meteor(caption_with_accent, gt)
+            # Accented exact: restored pred (có dấu) vs ground truth gốc (có dấu)
+            # → đo chất lượng accent restoration khi cùng style với GT
+            gt_raw = gt_map[img_name]
+            scores_accented = calculate_bleu(caption_with_accent, gt_raw)
+
+            # Semantic: so caption_no_accent vs gt_na (stripped)
+            # Accented: so caption_with_accent vs gt_raw (raw)
+            rouge_l_semantic = calculate_rouge_l(caption_no_accent, gt_na)
+            rouge_l_accented = calculate_rouge_l(caption_with_accent, gt_raw)
+            meteor_semantic = calculate_meteor(caption_no_accent, gt_na)
+            meteor_accented = calculate_meteor(caption_with_accent, gt_raw)
 
             for j, key in enumerate(["bleu1", "bleu2", "bleu3", "bleu4", "bleu"]):
-                bleu_no_accent[key].append(scores_no_accent[j])
-                bleu_with_accent[key].append(scores_with_accent[j])
+                bleu_semantic[key].append(scores_semantic[j])
+                bleu_accented[key].append(scores_accented[j])
 
-            rouge_l_no_accent.append(rouge_l_no)
-            rouge_l_with_accent.append(rouge_l_with)
-            meteor_no_accent.append(meteor_no)
-            meteor_with_accent.append(meteor_with)
+            rouge_l_semantic_list.append(rouge_l_semantic)
+            rouge_l_accented_list.append(rouge_l_accented)
+            meteor_semantic_list.append(meteor_semantic)
+            meteor_accented_list.append(meteor_accented)
 
             all_words_no_accent.extend(caption_no_accent.split())
             all_words_with_accent.extend(caption_with_accent.split())
 
             results.append({
                 "image": img_name,
-                "ground_truth": gt,
+                "ground_truth": gt_raw,
                 "caption_no_accent": caption_no_accent,
                 "caption_with_accent": caption_with_accent,
-                "bleu1_no_accent": scores_no_accent[0],
-                "bleu1_with_accent": scores_with_accent[0],
-                "bleu2_no_accent": scores_no_accent[1],
-                "bleu2_with_accent": scores_with_accent[1],
-                "bleu3_no_accent": scores_no_accent[2],
-                "bleu3_with_accent": scores_with_accent[2],
-                "bleu4_no_accent": scores_no_accent[3],
-                "bleu4_with_accent": scores_with_accent[3],
-                "bleu_no_accent": scores_no_accent[4],
-                "bleu_with_accent": scores_with_accent[4],
-                "rouge_l_no_accent": rouge_l_no,
-                "rouge_l_with_accent": rouge_l_with,
-                "meteor_no_accent": meteor_no,
-                "meteor_with_accent": meteor_with,
+                "bleu1_semantic_no_accent": scores_semantic[0],
+                "bleu1_accented_exact": scores_accented[0],
+                "bleu2_semantic_no_accent": scores_semantic[1],
+                "bleu2_accented_exact": scores_accented[1],
+                "bleu3_semantic_no_accent": scores_semantic[2],
+                "bleu3_accented_exact": scores_accented[2],
+                "bleu4_semantic_no_accent": scores_semantic[3],
+                "bleu4_accented_exact": scores_accented[3],
+                "bleu_semantic_no_accent": scores_semantic[4],
+                "bleu_accented_exact": scores_accented[4],
+                "rouge_l_semantic_no_accent": rouge_l_semantic,
+                "rouge_l_accented_exact": rouge_l_accented,
+                "meteor_semantic_no_accent": meteor_semantic,
+                "meteor_accented_exact": meteor_accented,
             })
 
             clear_device_cache()
@@ -453,17 +550,65 @@ def main():
             print(f"⚠️ Error on {img_name}: {e}")
             continue
 
-    # Tính trung bình
+    # ============================================================
+    # SBERT SEMANTIC SIMILARITY — chạy sau khi inference xong
+    # ============================================================
     n = len(results)
-    avg: Dict[str, Dict[str, float]] = {
-        "no_accent": {k: sum(v) / n for k, v in bleu_no_accent.items()},
-        "with_accent": {k: sum(v) / n for k, v in bleu_with_accent.items()},
-    }
+    if n == 0:
+        print("\n❌ Không có sample hợp lệ để tính metric. Dừng đánh giá.")
+        return
 
-    avg_rouge_l_no = sum(rouge_l_no_accent) / n if n > 0 else 0.0
-    avg_rouge_l_with = sum(rouge_l_with_accent) / n if n > 0 else 0.0
-    avg_meteor_no = sum(meteor_no_accent) / n if n > 0 else 0.0
-    avg_meteor_with = sum(meteor_with_accent) / n if n > 0 else 0.0
+    print(f"\n🔄 Computing SBERT semantic similarity ({n} samples)...")
+    sbert_name = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+    sbert_device = "mps" if torch.backends.mps.is_available() else "cpu"
+    sbert = SentenceTransformer(sbert_name, device=sbert_device)
+
+    # refs = ground truth RAW (dùng so sánh accented_exact)
+    # refs_semantic = ground truth STRIPPED (dùng so sánh semantic_no_accent)
+    # preds_na = prediction KHÔNG DẤU → strip → so với refs_semantic
+    # preds_a = prediction CÓ DẤU → so với refs RAW
+    refs = [r["ground_truth"] for r in results]
+    preds_na = [r["caption_no_accent"] for r in results]
+    preds_a = [r["caption_with_accent"] for r in results]
+
+    def rm_accent(s):
+        s = str(s).replace("đ", "d").replace("Đ", "D")
+        return "".join(ch for ch in unicodedata.normalize("NFD", s) if unicodedata.category(ch) != "Mn")
+
+    # Semantic no-accent: strip accent từ cả pred + ref
+    refs_semantic = [rm_accent(r) for r in refs]
+    preds_semantic = [rm_accent(p) for p in preds_na]
+
+    e_refs_sem = sbert.encode(refs_semantic, batch_size=64, convert_to_tensor=True,
+                               normalize_embeddings=True, show_progress_bar=False)
+    e_preds_sem = sbert.encode(preds_semantic, batch_size=64, convert_to_tensor=True,
+                               normalize_embeddings=True, show_progress_bar=False)
+    sbert_semantic = (e_refs_sem * e_preds_sem).sum(dim=1).cpu().numpy()
+
+    # Accented exact: pred có dấu vs ref raw có dấu
+    e_refs_raw = sbert.encode(refs, batch_size=64, convert_to_tensor=True,
+                              normalize_embeddings=True, show_progress_bar=False)
+    e_preds_a = sbert.encode(preds_a, batch_size=64, convert_to_tensor=True,
+                             normalize_embeddings=True, show_progress_bar=False)
+    sbert_accented = (e_refs_raw * e_preds_a).sum(dim=1).cpu().numpy()
+
+    for i, r in enumerate(results):
+        r["sbert_semantic_no_accent"] = round(float(sbert_semantic[i]), 4)
+        r["sbert_accented_exact"] = round(float(sbert_accented[i]), 4)
+
+    avg_sbert_semantic = round(float(sbert_semantic.mean()), 4)
+    avg_sbert_accented = round(float(sbert_accented.mean()), 4)
+    print(f"  SBERT (semantic no-accent): {avg_sbert_semantic:.4f}")
+    print(f"  SBERT (accented exact):     {avg_sbert_accented:.4f}")
+
+    # Tính trung bình
+    avg_semantic: Dict[str, float] = {k: sum(v) / n for k, v in bleu_semantic.items()}
+    avg_accented: Dict[str, float] = {k: sum(v) / n for k, v in bleu_accented.items()}
+
+    avg_rouge_l_semantic = sum(rouge_l_semantic_list) / n if n > 0 else 0.0
+    avg_rouge_l_accented = sum(rouge_l_accented_list) / n if n > 0 else 0.0
+    avg_meteor_semantic = sum(meteor_semantic_list) / n if n > 0 else 0.0
+    avg_meteor_accented = sum(meteor_accented_list) / n if n > 0 else 0.0
 
     avg_len_no_accent = len(all_words_no_accent) / n if n > 0 else 0
     avg_len_with_accent = len(all_words_with_accent) / n if n > 0 else 0
@@ -473,13 +618,14 @@ def main():
     fieldnames = [
         "image", "ground_truth",
         "caption_no_accent", "caption_with_accent",
-        "bleu1_no_accent", "bleu1_with_accent",
-        "bleu2_no_accent", "bleu2_with_accent",
-        "bleu3_no_accent", "bleu3_with_accent",
-        "bleu4_no_accent", "bleu4_with_accent",
-        "bleu_no_accent", "bleu_with_accent",
-        "rouge_l_no_accent", "rouge_l_with_accent",
-        "meteor_no_accent", "meteor_with_accent",
+        "bleu1_semantic_no_accent", "bleu1_accented_exact",
+        "bleu2_semantic_no_accent", "bleu2_accented_exact",
+        "bleu3_semantic_no_accent", "bleu3_accented_exact",
+        "bleu4_semantic_no_accent", "bleu4_accented_exact",
+        "bleu_semantic_no_accent", "bleu_accented_exact",
+        "rouge_l_semantic_no_accent", "rouge_l_accented_exact",
+        "meteor_semantic_no_accent", "meteor_accented_exact",
+        "sbert_semantic_no_accent", "sbert_accented_exact",
     ]
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -494,24 +640,28 @@ def main():
         "test_samples": n,
         "pipeline": "BLIP → Accent Restoration",
         "tokenization": "word-level regex \\w+",
-        "metrics_reported": ["BLEU-1", "BLEU-2", "BLEU-3", "BLEU-4", "ROUGE-L", "METEOR"],
+        "metrics_reported": ["BLEU-1", "BLEU-2", "BLEU-3", "BLEU-4", "ROUGE-L", "METEOR", "SBERT"],
         "bleu_scores": {
-            "bleu1_no_accent": round(avg["no_accent"]["bleu1"], 4),
-            "bleu2_no_accent": round(avg["no_accent"]["bleu2"], 4),
-            "bleu3_no_accent": round(avg["no_accent"]["bleu3"], 4),
-            "bleu4_no_accent": round(avg["no_accent"]["bleu4"], 4),
-            "bleu1_with_accent": round(avg["with_accent"]["bleu1"], 4),
-            "bleu2_with_accent": round(avg["with_accent"]["bleu2"], 4),
-            "bleu3_with_accent": round(avg["with_accent"]["bleu3"], 4),
-            "bleu4_with_accent": round(avg["with_accent"]["bleu4"], 4),
+            "bleu1_semantic_no_accent": round(avg_semantic["bleu1"], 4),
+            "bleu2_semantic_no_accent": round(avg_semantic["bleu2"], 4),
+            "bleu3_semantic_no_accent": round(avg_semantic["bleu3"], 4),
+            "bleu4_semantic_no_accent": round(avg_semantic["bleu4"], 4),
+            "bleu1_accented_exact": round(avg_accented["bleu1"], 4),
+            "bleu2_accented_exact": round(avg_accented["bleu2"], 4),
+            "bleu3_accented_exact": round(avg_accented["bleu3"], 4),
+            "bleu4_accented_exact": round(avg_accented["bleu4"], 4),
         },
         "rouge_l": {
-            "no_accent": round(avg_rouge_l_no, 4),
-            "with_accent": round(avg_rouge_l_with, 4),
+            "semantic_no_accent": round(avg_rouge_l_semantic, 4),
+            "accented_exact": round(avg_rouge_l_accented, 4),
         },
         "meteor": {
-            "no_accent": round(avg_meteor_no, 4),
-            "with_accent": round(avg_meteor_with, 4),
+            "semantic_no_accent": round(avg_meteor_semantic, 4),
+            "accented_exact": round(avg_meteor_accented, 4),
+        },
+        "sbert": {
+            "semantic_no_accent": avg_sbert_semantic,
+            "accented_exact": avg_sbert_accented,
         },
         "caption_length": {
             "no_accent": round(avg_len_no_accent, 1),
@@ -531,14 +681,15 @@ def main():
     print(f"Total samples: {n}  |  Time: {elapsed/60:.1f}min ({elapsed/n:.1f}s/img)")
     print(f"Tokenization: word-level regex \\w+")
     print()
-    print(f"{'':25} {'Không dấu':>15} {'Có dấu':>15}")
-    print("-" * 58)
-    print(f"{'BLEU-1':<25} {avg['no_accent']['bleu1']:>15.4f} {avg['with_accent']['bleu1']:>15.4f}")
-    print(f"{'BLEU-2':<25} {avg['no_accent']['bleu2']:>15.4f} {avg['with_accent']['bleu2']:>15.4f}")
-    print(f"{'BLEU-3':<25} {avg['no_accent']['bleu3']:>15.4f} {avg['with_accent']['bleu3']:>15.4f}")
-    print(f"{'BLEU-4':<25} {avg['no_accent']['bleu4']:>15.4f} {avg['with_accent']['bleu4']:>15.4f}")
-    print(f"{'ROUGE-L':<25} {avg_rouge_l_no:>15.4f} {avg_rouge_l_with:>15.4f}")
-    print(f"{'METEOR':<25} {avg_meteor_no:>15.4f} {avg_meteor_with:>15.4f}")
+    print(f"{'':25} {'Semantic (no-acc)':>20} {'Accented (exact)':>20}")
+    print("-" * 68)
+    print(f"{'BLEU-1':<25} {avg_semantic['bleu1']:>20.4f} {avg_accented['bleu1']:>20.4f}")
+    print(f"{'BLEU-2':<25} {avg_semantic['bleu2']:>20.4f} {avg_accented['bleu2']:>20.4f}")
+    print(f"{'BLEU-3':<25} {avg_semantic['bleu3']:>20.4f} {avg_accented['bleu3']:>20.4f}")
+    print(f"{'BLEU-4':<25} {avg_semantic['bleu4']:>20.4f} {avg_accented['bleu4']:>20.4f}")
+    print(f"{'ROUGE-L':<25} {avg_rouge_l_semantic:>20.4f} {avg_rouge_l_accented:>20.4f}")
+    print(f"{'METEOR':<25} {avg_meteor_semantic:>20.4f} {avg_meteor_accented:>20.4f}")
+    print(f"{'SBERT':<25} {avg_sbert_semantic:>20.4f} {avg_sbert_accented:>20.4f}")
     print()
     print("CAPTION LENGTH:")
     print(f"  Không dấu: {avg_len_no_accent:.1f} words avg")
