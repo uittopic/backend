@@ -16,8 +16,39 @@ from app.core.config import (
 
 app = FastAPI(
     title=API_TITLE,
-    description="API tạo caption tiếng Việt cho ảnh sản phẩm sử dụng BLIP model",
-    version=API_VERSION
+    description="""
+## BLIP Vietnamese Captioning API
+
+API tạo caption tiếng Việt cho ảnh sản phẩm thương mại điện tử (Shopee).
+
+### Mô hình
+- **BLIP** (Salesforce): Image encoder → Caption generation (không dấu)
+- **Accent Restoration** (peterhung/vietnamese-accent-marker-xlm-roberta): Gán dấu tiếng Việt
+
+### Pipeline
+```
+Image → BLIP → Caption không dấu → Accent Restoration → Caption có dấu
+```
+
+### Metrics chất lượng
+| Metric | Giá trị |
+|--------|---------|
+| BLEU-4 (no-accent) | 0.5646 |
+| ROUGE-L (no-accent) | 0.6537 |
+| SBERT (no-accent) | 0.8109 |
+
+### Rate Limit
+- Mặc định: **30 requests/phút/IP**
+- Có thể tắt qua env `ENABLE_RATE_LIMIT=false`
+
+### Chú ý
+- Ảnh được cache theo MD5 hash (TTL 24h)
+- Batch tối đa **5 ảnh/request**
+- Model inference trên MPS (Mac M1) hoặc CPU
+    """,
+    version=API_VERSION,
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 # CORS middleware để cho phép mobile app gọi API
@@ -42,16 +73,28 @@ if ENABLE_AUTH:
 # Include routers
 app.include_router(caption_router, prefix="/api")
 
-@app.get("/")
+@app.get(
+    "/",
+    summary="Trang chủ API",
+    description="Thông tin cơ bản về API và các endpoints chính",
+    tags=["Root"],
+)
 def root():
     """Root endpoint"""
     return {
-        "message": "BLIP Vietnamese Captioning API is running 🚀",
+        "message": "BLIP Vietnamese Captioning API is running",
         "docs": "/docs",
-        "health": "/api/health"
+        "redoc": "/redoc",
+        "health": "/api/health",
     }
 
-@app.get("/info")
+
+@app.get(
+    "/info",
+    summary="Thông tin chi tiết về API",
+    description="Danh sách đầy đủ các endpoints, giới hạn, và cấu hình hiện tại",
+    tags=["Root"],
+)
 def info():
     """Thông tin về API"""
     from app.core.config import (

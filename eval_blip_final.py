@@ -22,6 +22,7 @@ from typing import Any, Dict, List, cast
 
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
+from sentence_transformers import SentenceTransformer
 import torch
 from PIL import Image
 from tqdm import tqdm
@@ -243,7 +244,8 @@ def rouge_l(ref: List[str], hyp: List[str]) -> float:
 # ============================================================
 
 print(f"\n🔄 Running inference on {len(rows)} images...")
-t0 = time.time()
+eval_t0 = time.time()
+infer_t0 = eval_t0
 
 bleu1_vals, bleu2_vals, bleu3_vals, bleu4_vals = [], [], [], []
 rouge_vals = []
@@ -309,12 +311,12 @@ for i, row in enumerate(tqdm(rows, desc="Eval", unit="img", disable=_args.quiet)
     })
 
     if (i + 1) % 100 == 0:
-        elapsed = time.time() - t0
+        elapsed = time.time() - infer_t0
         avg_b1 = sum(bleu1_vals) / len(bleu1_vals)
         eta = (elapsed / (i + 1)) * (len(rows) - i - 1)
         print(f"   [{i+1}/{len(rows)}] BLEU-1: {avg_b1:.4f} | ETA: {eta/60:.1f}min")
 
-elapsed = time.time() - t0
+infer_elapsed = time.time() - infer_t0
 
 # ============================================================
 # METRICS SUMMARY
@@ -331,20 +333,64 @@ stats = {
     "rouge_l": round(avg(rouge_vals), 4),
 }
 
+# ============================================================
+# SBERT SEMANTIC SIMILARITY
+# ============================================================
+print(f"\n🔄 Computing SBERT semantic similarity...")
+
+sbert_model_name = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+sbert_device = "mps" if torch.backends.mps.is_available() else "cpu"
+sbert = SentenceTransformer(sbert_model_name, device=sbert_device)
+
+refs_list = [r["ground_truth"] for r in results]
+preds_list = [r["prediction"] for r in results]
+
+# Original SBERT (with accents)
+e_refs = sbert.encode(refs_list, batch_size=64, convert_to_tensor=True, normalize_embeddings=True, show_progress_bar=False)
+e_preds = sbert.encode(preds_list, batch_size=64, convert_to_tensor=True, normalize_embeddings=True, show_progress_bar=False)
+sbert_cosine = (e_refs * e_preds).sum(dim=1).cpu().numpy()
+
+# No-accent SBERT (normalize both sides before embedding)
+def rm_accent(s: str) -> str:
+    s = str(s).replace("đ", "d").replace("Đ", "D")
+    return "".join(ch for ch in unicodedata.normalize("NFD", s) if unicodedata.category(ch) != "Mn")
+
+refs_na = [rm_accent(r) for r in refs_list]
+preds_na = [rm_accent(p) for p in preds_list]
+e_refs_na = sbert.encode(refs_na, batch_size=64, convert_to_tensor=True, normalize_embeddings=True, show_progress_bar=False)
+e_preds_na = sbert.encode(preds_na, batch_size=64, convert_to_tensor=True, normalize_embeddings=True, show_progress_bar=False)
+sbert_cosine_na = (e_refs_na * e_preds_na).sum(dim=1).cpu().numpy()
+
+stats["sbert_cosine"] = round(float(sbert_cosine.mean()), 4)
+stats["sbert_cosine_na"] = round(float(sbert_cosine_na.mean()), 4)
+
+for i, r in enumerate(results):
+    r["sbert_cosine"] = round(float(sbert_cosine[i]), 4)
+    r["sbert_cosine_na"] = round(float(sbert_cosine_na[i]), 4)
+
+print(f"  SBERT (original):   {stats['sbert_cosine']:.4f}")
+print(f"  SBERT (no-accent):  {stats['sbert_cosine_na']:.4f}")
+
+total_elapsed = time.time() - eval_t0
+
 print()
 print("=" * 60)
 print("📊 KẾT QUẢ EVAL TRÊN TEST SET")
 print("=" * 60)
 print(f"Model:  {MODEL_PATH}")
 print(f"Test:   {len(rows)} samples")
-time_per_img = (elapsed / len(rows)) if rows else 0.0
-print(f"Time:   {elapsed/60:.1f} min ({time_per_img:.1f}s/img)")
+time_per_img = (total_elapsed / len(rows)) if rows else 0.0
+print(f"Time:   {total_elapsed/60:.1f} min ({time_per_img:.1f}s/img)")
+print(f"  - Inference: {infer_elapsed/60:.1f} min")
+print(f"  - SBERT:     {(total_elapsed-infer_elapsed)/60:.1f} min")
 print()
 print(f"  BLEU-1:  {stats['bleu1']:.4f}  ({stats['bleu1']*100:.2f}%)")
 print(f"  BLEU-2:  {stats['bleu2']:.4f}  ({stats['bleu2']*100:.2f}%)")
 print(f"  BLEU-3:  {stats['bleu3']:.4f}  ({stats['bleu3']*100:.2f}%)")
 print(f"  BLEU-4:  {stats['bleu4']:.4f}  ({stats['bleu4']*100:.2f}%)")
 print(f"  ROUGE-L: {stats['rouge_l']:.4f}  ({stats['rouge_l']*100:.2f}%)")
+print(f"  SBERT (original):   {stats['sbert_cosine']:.4f}  ({stats['sbert_cosine']*100:.2f}%)")
+print(f"  SBERT (no-accent): {stats['sbert_cosine_na']:.4f}  ({stats['sbert_cosine_na']*100:.2f}%)")
 
 # BLEU-4 distribution
 print(f"\n  BLEU-4 distribution:")
@@ -378,7 +424,9 @@ with open(summary_path, "w", encoding="utf-8") as f:
         "model": str(MODEL_PATH),
         "test_csv": str(TEST_CSV),
         "test_samples": len(rows),
-        "elapsed_min": round(elapsed / 60, 2),
+        "elapsed_min": round(total_elapsed / 60, 2),
+        "inference_elapsed_min": round(infer_elapsed / 60, 2),
+        "sbert_elapsed_min": round((total_elapsed - infer_elapsed) / 60, 2),
         "generation_kwargs": gen_kwargs,
         "no_accent_eval": _args.no_accent,
         "metrics": stats,
@@ -386,7 +434,7 @@ with open(summary_path, "w", encoding="utf-8") as f:
 
 # CSV per-image
 csv_path = OUTPUT_DIR_P / "test_eval_detail.csv"
-fieldnames = ["image", "ground_truth", "prediction", "bleu1", "bleu2", "bleu3", "bleu4", "rouge_l"]
+fieldnames = ["image", "ground_truth", "prediction", "bleu1", "bleu2", "bleu3", "bleu4", "rouge_l", "sbert_cosine", "sbert_cosine_na"]
 with open(csv_path, "w", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(f, fieldnames=fieldnames)
     writer.writeheader()
